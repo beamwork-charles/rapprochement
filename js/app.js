@@ -1,9 +1,9 @@
 // Écran « Pointage » : connexion, dépôt du relevé, analyse (moteur dans le navigateur), validation vers Archie.
 // Portage de src_reference/ui/index.html + server.py sur Supabase.
-import { lireReleve } from './releve.js?v=20261126-18';
-import * as E from './engine.js?v=20261126-18';
-import * as RL from './relances.js?v=20261126-18';
-import * as D from './relances-donnees.js?v=20261126-18';
+import { lireReleve } from './releve.js?v=20261126-19';
+import * as E from './engine.js?v=20261126-19';
+import * as RL from './relances.js?v=20261126-19';
+import * as D from './relances-donnees.js?v=20261126-19';
 
 const C = window.CONFIG || {};
 const XLSX = window.XLSX;
@@ -576,8 +576,8 @@ async function analyser({ arrierePlan = false } = {}) {
   if (perime()) return;
   const partiels = [];
   for (const l of R.lines) {
-    if (l.tab !== 'deja' || l.origine !== "Pointé par l'outil" || !Array.isArray(l.deja) || avecAvance.has(l.id)) continue;
-    const reste = Math.round((l.credit - l.deja.reduce((s, p) => s + Number(p.montant || 0), 0)) * 100) / 100;
+    if (l.tab !== 'deja' || l.origine !== "Pointé par l'outil" || !Array.isArray(l.paiements_archie) || avecAvance.has(l.id)) continue;
+    const reste = Math.round((l.credit - l.paiements_archie.reduce((s, p) => s + Number(p.montant || 0), 0)) * 100) / 100;
     if (reste >= SEUIL_ECART) { l.partiel = reste; l.detail = `${l.detail || ''} — ATTENTION : ${eur(reste)} de ce virement ne sont affectés à aucune facture`; partiels.push(l); }
   }
   if (partiels.length) avert.push(`${partiels.length} virement(s) pointé(s) seulement en partie : ${eur(partiels.reduce((s, l) => s + l.partiel, 0))} ne sont affectés à aucune facture. Ils sont en tête de l'onglet « Déjà pointé » ; le complément est à saisir dans Archie.`);
