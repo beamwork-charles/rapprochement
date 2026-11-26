@@ -3,8 +3,8 @@
 // Deux façons d'y accéder :
 //   • par lien (…/suivi.html#cle=…) : aucune connexion ; la fonction « suivi » vérifie la clé et ne renvoie que le niveau 5 ;
 //   • connecté avec un compte @thebureau.paris.
-import * as D from './relances-donnees.js?v=20261126-17';
-import * as RL from './relances.js?v=20261126-17';
+import * as D from './relances-donnees.js?v=20261126-18';
+import * as RL from './relances.js?v=20261126-18';
 
 const C = window.CONFIG || {};
 const $ = (s) => document.querySelector(s);
@@ -21,32 +21,41 @@ let ETAT = null; // { R, chargement, maj, progression, erreur, erreurMaj }
 let TRI = 'retard', Q = '';
 const CLE = new URLSearchParams(location.hash.slice(1)).get('cle'); // lien de suivi sans connexion
 
-/** Clients au niveau 5 (par lien, la fonction n'a renvoyé qu'eux). */
-const clients5 = (R) => (R.mode === 'lien' ? R.clients : D.niveau5(R));
-
-// ---------------------------------------------------------------------------- accès par lien
-async function appelLien(quoi) {
-  const r = await fetch(`${C.SUPABASE_URL}/functions/v1/suivi`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json', apikey: C.SUPABASE_ANON_KEY }, body: JSON.stringify({ cle: CLE, quoi }),
-  });
+// ---------------------------------------------------------------------------- données : toujours par la fonction « suivi »
+/** Appelle la fonction « suivi » avec la clé du lien ou, à défaut, la session du compte connecté. Elle ne renvoie que le niveau 5. */
+async function appelSuivi(quoi) {
+  const headers = { 'Content-Type': 'application/json', apikey: C.SUPABASE_ANON_KEY };
+  const corps = { quoi };
+  if (CLE) corps.cle = CLE;
+  else {
+    const { data } = await sb.auth.getSession();
+    if (!data.session) { const e = new Error('Session expirée : reconnectez-vous.'); e.statut = 401; throw e; }
+    headers.Authorization = `Bearer ${data.session.access_token}`;
+  }
+  const r = await fetch(`${C.SUPABASE_URL}/functions/v1/suivi`, { method: 'POST', headers, body: JSON.stringify(corps) });
   const j = await r.json().catch(() => ({}));
   if (!r.ok) { const e = new Error(j.error || `Erreur ${r.status}`); e.statut = r.status; throw e; }
-  return { ...j, mode: 'lien', calcule_le: j.calcule_le ? new Date(j.calcule_le) : null };
+  return { ...j, calcule_le: j.calcule_le ? new Date(j.calcule_le) : null };
 }
-function lienInvalide(msg) {
+/** Accès refusé : lien révoqué ou inconnu, ou session qui n'est plus valable. */
+function accesRefuse(e) {
+  if (![400, 401, 403].includes(e.statut)) return false;
   ETAT = null;
-  $('#main').innerHTML = `<div class="center"><h2>Lien non valide</h2><p>${esc(msg)}</p></div>`;
+  if (CLE) $('#main').innerHTML = `<div class="center"><h2>Lien non valide</h2><p>${esc(e.message)}</p></div>`;
+  else vueConnexion(e.message);
+  return true;
 }
-async function demarrerLien() {
+async function demarrer() {
   ETAT = { R: null, chargement: true, maj: false };
   rendu();
   const etat = ETAT;
-  try { etat.R = await appelLien('donnees'); } catch (e) { if (e.statut === 403 || e.statut === 400) return lienInvalide(e.message); etat.erreur = e.message; }
+  try { etat.R = await appelSuivi('donnees'); } catch (e) { if (accesRefuse(e)) return; etat.erreur = e.message; }
+  if (ETAT !== etat) return;
   etat.chargement = false;
   rendu();
-  actualiserLien();
+  actualiser();
 }
-async function actualiserLien() {
+async function actualiser() {
   const etat = ETAT;
   if (!etat || etat.maj) return;
   const debut = Date.now(), parPas = D.memoire.lire('sec_actualisation_lien', 12);
@@ -57,33 +66,21 @@ async function actualiserLien() {
   etat.maj = true; etat.erreurMaj = null; maj(); rendu();
   const tic = setInterval(maj, 1000);
   try {
-    const R = await appelLien('actualiser');
+    const R = await appelSuivi('actualiser');
     D.memoire.ecrire('sec_actualisation_lien', ((Date.now() - debut) / 1000).toFixed(1));
     if (ETAT !== etat) return;
     etat.R = R; etat.erreur = null;
   } catch (e) {
-    if (e.statut === 403) { clearInterval(tic); return lienInvalide(e.message); }
+    if (accesRefuse(e)) return;
     etat.erreurMaj = e.message;
   } finally { clearInterval(tic); }
   etat.maj = false;
   if (ETAT === etat) rendu();
 }
 
-async function appel(nom, body) {
-  for (let essai = 0; ; essai++) {
-    const { data, error } = await sb.functions.invoke(nom, { body });
-    if (!error) return data;
-    const statut = error.context?.status;
-    if (essai < 2 && (!statut || statut === 546 || statut >= 502)) { await new Promise((r) => setTimeout(r, 1500 * (essai + 1))); continue; }
-    let msg = error.message;
-    try { const j = await error.context.json(); msg = j.error || j.message || msg; } catch { /* corps illisible */ }
-    throw new Error(msg);
-  }
-}
-
-// ---------------------------------------------------------------------------- connexion
+// ---------------------------------------------------------------------------- connexion (accès sans lien)
 function vueConnexion(msg) {
-  USER = null; ETAT = null; $('#b-out').hidden = true; $('#who').textContent = '';
+  USER = null; ETAT = null; courant = undefined; $('#b-out').hidden = true; $('#who').textContent = '';
   $('#main').innerHTML = `<div class="center"><h2>Connexion</h2><p>Saisissez votre adresse @${esc(C.DOMAINE)} : un lien de connexion vous sera envoyé.</p>
     <form class="form" id="f-login">
       <input id="email" type="email" autocomplete="email" placeholder="prenom@${esc(C.DOMAINE)}" required>
@@ -112,39 +109,6 @@ async function afficher(session) {
   await demarrer();
 }
 
-// ---------------------------------------------------------------------------- données
-async function demarrer() {
-  ETAT = { R: null, chargement: true, maj: false };
-  rendu();
-  const etat = ETAT;
-  try {
-    const [ctx, enr] = await Promise.all([D.contexte(sb), D.lireEnregistre(sb)]);
-    if (ETAT !== etat) return;
-    if (enr.factures.length) etat.R = D.calculer(enr.factures, ctx, enr.calcule_le);
-  } catch (e) { etat.erreur = e.message; }
-  etat.chargement = false;
-  rendu();
-  actualiser();
-}
-
-async function actualiser() {
-  const etat = ETAT;
-  if (!etat || etat.maj) return;
-  etat.maj = true; etat.erreurMaj = null; etat.progression = "Lecture d'Archie…"; rendu();
-  try {
-    const factures = await D.lireOuvertes(appel, (texte) => {
-      etat.progression = texte;
-      const e = $('#progression'); if (e && ETAT === etat) e.textContent = texte;
-    });
-    const R = D.calculer(factures, await D.contexte(sb));
-    if (ETAT !== etat) return;
-    etat.R = R; etat.erreur = null;
-    D.enregistrer(sb, R).catch((e) => console.warn('Calendrier non enregistré :', e.message));
-  } catch (e) { etat.erreurMaj = e.message; }
-  etat.maj = false;
-  if (ETAT === etat) rendu();
-}
-
 // ---------------------------------------------------------------------------- rendu
 function rendu() {
   const m = $('#main');
@@ -160,7 +124,7 @@ function rendu() {
   if (!R) { m.innerHTML = h + `<div class="empty">Lecture d'Archie en cours…</div>`; return; }
 
   if (!R.actives) h += `<div class="info">Les relances automatiques ne sont pas encore activées : le niveau 5 est estimé d'après le retard de la facture la plus ancienne de chaque client (niveau 4 à J+14, niveau 5 trois jours ouvrés plus tard).</div>`;
-  const tous = clients5(R);
+  const tous = R.clients;
   h += `<div class="resume"><div><div class="n">${tous.length}</div><div class="l">clients au niveau 5</div></div>
     <div><div class="n">${eur0(tous.reduce((s, c) => s + c.total, 0))}</div><div class="l">restant dû</div></div>
     <div><div class="n">${tous.reduce((s, c) => s + c.factures.length, 0)}</div><div class="l">factures</div></div></div>
@@ -175,7 +139,7 @@ function rendu() {
 /** Lignes du tableau (recherche et tri sans redessiner la page). */
 function tableau() {
   const R = ETAT?.R; if (!R || !$('#corps')) return;
-  const tous = clients5(R);
+  const tous = R.clients;
   const q = Q.trim().toLowerCase();
   const L = tous.filter((c) => !q || [c.client, c.manager, c.manager_email, ...c.contacts, ...c.factures.map((f) => f.ref)].join(' ').toLowerCase().includes(q));
   const cle = { retard: (c) => c.retard_max, montant: (c) => c.total, relances: (c) => c.relances.length };
@@ -204,13 +168,13 @@ function ligne(c, R) {
 }
 
 window.S = {
-  actualiser: () => (CLE ? actualiserLien() : actualiser()),
+  actualiser: () => actualiser(),
   trier: (k) => { TRI = k; tableau(); },
 };
 
 (async function init() {
   if (!C.SUPABASE_URL || !C.SUPABASE_ANON_KEY) { $('#main').innerHTML = '<div class="center"><h2>Configuration en attente</h2></div>'; return; }
-  if (CLE) return demarrerLien(); // par lien : ni connexion, ni compte affiché
+  if (CLE) return demarrer(); // par lien : ni connexion, ni compte affiché
   if (!window.supabase) { $('#main').innerHTML = '<div class="center"><h2>Configuration en attente</h2></div>'; return; }
   sb = window.supabase.createClient(C.SUPABASE_URL, C.SUPABASE_ANON_KEY, { auth: { persistSession: true, detectSessionInUrl: true } });
   $('#b-out').addEventListener('click', async () => { await sb.auth.signOut(); courant = null; vueConnexion(); });

@@ -1,6 +1,6 @@
 // Données du calendrier des relances, communes à l'écran principal et à la page de suivi « niveau 5 ».
 // Le calcul lui-même est dans relances.js (même règle partout).
-import * as RL from './relances.js?v=20261126-17';
+import * as RL from './relances.js?v=20261126-18';
 
 export const SPACES = ['16-cours-albert-1er', '25-rue-du-4-septembre', '28-cours-albert-1er', '42-rue-notre-dame-des-victoires'];
 const dateParis = (q) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Paris', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(q));
@@ -39,18 +39,20 @@ export async function toutLire(fabrique) {
   }
 }
 
-/** Relances déjà envoyées, liste « ne pas relancer », activation des envois, dernier relevé analysé. */
+/** Relances déjà envoyées, liste « ne pas relancer », activation des envois, dernier relevé déposé. */
 export async function contexte(sb) {
   const [env, npr, rel, par] = await Promise.all([
     toutLire(() => sb.from('relances').select('group_uuid,niveau,quand,factures').eq('statut', 'envoye').order('id')),
     toutLire(() => sb.from('ne_pas_relancer').select('group_uuid,client,motif,par_email,quand').order('group_uuid')),
-    sb.from('releves').select('analyse_le').not('analyse_le', 'is', null).order('analyse_le', { ascending: false }).limit(1),
+    // Garde-fou « relances suspendues si aucun relevé traité depuis 2 jours ouvrés » : on compte depuis le DÉPÔT du dernier
+    // relevé (un vieux relevé simplement rouvert et réanalysé ce matin ne doit pas lever la suspension).
+    sb.from('releves').select('depose_le').neq('statut', 'erreur').order('depose_le', { ascending: false }).limit(1),
     sb.from('parametres').select('cle,valeur'),
   ]);
   return {
     envoyees: env.map((r) => ({ group_uuid: r.group_uuid, niveau: r.niveau, date: dateParis(r.quand), factures: (r.factures || []).map((f) => f.uuid || f) })),
     exclus: Object.fromEntries(npr.map((n) => [n.group_uuid, n])),
-    dernierReleve: rel.data?.[0]?.analyse_le ? dateParis(rel.data[0].analyse_le) : null,
+    dernierReleve: rel.data?.[0]?.depose_le ? dateParis(rel.data[0].depose_le) : null,
     actives: (par.data || []).find((p) => p.cle === 'relances_actives')?.valeur === true,
     // verrou : aucun envoi avant cette date (AAAA-MM-JJ), quel que soit l'état d'activation
     pasAvant: (() => { const v = (par.data || []).find((p) => p.cle === 'relances_pas_avant')?.valeur; return typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : null; })(),

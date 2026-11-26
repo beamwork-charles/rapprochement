@@ -145,10 +145,13 @@ export function calendrier(factures, envoyees, exclus, maintenant = new Date(), 
     const h = histo.get(u);
     if (!h || r.niveau > h.niveau) histo.set(u, { niveau: r.niveau, date: r.date });
   }
-  const hors = { factures: 0, total: 0 };
+  const hors = { factures: 0, total: 0, sansEcheance: 0, totalSansEcheance: 0 };
   const lignes = [];
   for (const f of factures) {
-    if (!['open', 'partially_paid'].includes(f.state) || !f.echeance || f.echeance > aujourdhui) continue;
+    if (!['open', 'partially_paid'].includes(f.state)) continue;
+    // une facture sans date d'échéance ne peut pas entrer au calendrier : on la compte pour qu'elle ne passe pas inaperçue
+    if (!f.echeance) { if (f.reste >= RESTE_MINIMUM) { hors.sansEcheance++; hors.totalSansEcheance = Math.round((hors.totalSansEcheance + f.reste) * 100) / 100; } continue; }
+    if (f.echeance > aujourdhui) continue;
     if (f.reste < RESTE_MINIMUM) continue;
     if (f.echeance < DEBUT_PERIMETRE) { hors.factures++; hors.total += f.reste; continue; }
     const h = histo.get(f.uuid) || { niveau: 0, date: null };

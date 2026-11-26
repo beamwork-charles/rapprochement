@@ -1,9 +1,9 @@
 // Écran « Pointage » : connexion, dépôt du relevé, analyse (moteur dans le navigateur), validation vers Archie.
 // Portage de src_reference/ui/index.html + server.py sur Supabase.
-import { lireReleve } from './releve.js?v=20261126-17';
-import * as E from './engine.js?v=20261126-17';
-import * as RL from './relances.js?v=20261126-17';
-import * as D from './relances-donnees.js?v=20261126-17';
+import { lireReleve } from './releve.js?v=20261126-18';
+import * as E from './engine.js?v=20261126-18';
+import * as RL from './relances.js?v=20261126-18';
+import * as D from './relances-donnees.js?v=20261126-18';
 
 const C = window.CONFIG || {};
 const XLSX = window.XLSX;
@@ -33,6 +33,7 @@ function boutons() {
   $('#b-reload').hidden = !co || !S?.releve; $('#b-clore').hidden = !co || !S?.releve;
   const occupe = !S || S.status === 'loading' || S.sending;
   $('#b-deposer').disabled = occupe; $('#b-reload').disabled = occupe || !pret || S.archieEnCours; $('#b-clore').disabled = occupe || !pret || S.archieEnCours;
+  $('#b-out').disabled = Boolean(S?.sending); // pas de déconnexion au milieu d'un envoi vers Archie
   $('#who').textContent = USER ? USER.email : '';
 }
 const journal = (action, champs = {}) => sb.from('journal').insert({ action, releve_id: S?.releve?.id ?? null, ...champs }).then(({ error }) => { if (error) console.warn('Journal :', error.message); });
@@ -96,15 +97,18 @@ async function calculerRelances(factures) {
 }
 /** Relit seulement les factures ouvertes dans Archie (plus rapide qu'une analyse complète). */
 async function actualiserRelances() {
-  S.relancesEnCours = true; S.relancesProgression = "Lecture d'Archie…"; renderBody();
+  const etat = S;
+  if (!etat || etat.relancesEnCours || etat.archieEnCours) return; // une seule relecture à la fois
+  etat.relancesEnCours = true; etat.relancesProgression = "Lecture d'Archie…"; renderBody();
   try {
-    await calculerRelances(await D.lireOuvertes(appelFonction, (texte) => {
-      S.relancesProgression = texte;
-      const b = $('#b-act-rel'); if (b) b.textContent = texte;
-    }));
-    toast('Relances actualisées');
+    const factures = await D.lireOuvertes(appelFonction, (texte) => {
+      etat.relancesProgression = texte;
+      const b = $('#b-act-rel'); if (b && S === etat) b.textContent = texte;
+    });
+    if (S === etat) { await calculerRelances(factures); toast('Relances actualisées'); }
   } catch (e) { toast(`Actualisation impossible : ${e.message}`); }
-  S.relancesEnCours = false; render();
+  etat.relancesEnCours = false;
+  if (S === etat) renduSansCouperLaSaisie();
 }
 const NIV = (n) => (n ? `Niveau ${n} · ${RL.LIBELLE_NIVEAU[n]}` : '—');
 
@@ -188,7 +192,7 @@ function relancesView() {
   const prochains = actifs.filter((c) => c.prochaine_date === R.creneau);
   let h = `<div class="info"><b>${R.actives ? 'Relances activées' : 'Lecture seule : aucune relance n\'est envoyée.'}</b>
     ${R.pasAvant ? `<b>Aucun envoi avant le ${dfr(R.pasAvant)}</b> (verrou demandé par Charles).` : ''}
-    Dernier relevé analysé le ${R.dernierReleve ? dfr(R.dernierReleve) : '—'}${R.suspendues ? ' — <b>plus de 2 jours ouvrés : les envois seraient suspendus</b>' : ''}.
+    Dernier relevé déposé le ${R.dernierReleve ? dfr(R.dernierReleve) : '—'}${R.suspendues ? ' — <b>plus de 2 jours ouvrés : les envois seraient suspendus</b>' : ''}.
     Calcul du ${R.calcule_le.toLocaleDateString('fr-FR')} à ${R.calcule_le.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}.
     <button class="btn sm" id="b-act-rel" style="margin-left:8px" onclick="A.actualiserRelances()" ${S.relancesEnCours || S.archieEnCours ? 'disabled' : ''}>${S.relancesEnCours ? esc(S.relancesProgression || "Lecture d'Archie…") : S.archieEnCours ? 'Mise à jour en cours…' : 'Actualiser'}</button>
     <button class="btn sm" onclick="A.vueRelances('textes')">Textes des relances</button>
@@ -199,6 +203,7 @@ function relancesView() {
       <span>Prochain envoi possible</span><b>${dfr(R.creneau)} à 8 h · ${prochains.length} client(s)</b>
       ${parRetard.map(([n, k, m]) => `<span>Selon le retard : ${NIV(n)}</span><b>${k} facture(s) · ${eur(m)}</b>`).join('')}
       <span>Hors périmètre (échues avant le ${dfr(RL.DEBUT_PERIMETRE)})</span><b>${R.hors.factures} facture(s) · ${eur(R.hors.total)}</b>
+      ${R.hors.sansEcheance ? `<span>Sans date d'échéance dans Archie (jamais relancées)</span><b>${R.hors.sansEcheance} facture(s) · ${eur(R.hors.totalSansEcheance)}</b>` : ''}
     </div></div>`;
   const q = Q.toLowerCase();
   const L = R.clients.filter((c) => !Q || (c.client + ' ' + c.factures.map((f) => f.ref).join(' ')).toLowerCase().includes(q));
@@ -369,16 +374,33 @@ function nomDepuisEmail(email) {
 function montrerEcran() { $('header').hidden = false; document.title = 'Pointage & Relances — The Bureau'; }
 
 // ============================================================================ relevé et analyse
-async function chargerReleve() {
-  S = { status: 'loading', progress: 'Chargement du relevé…', lines: [], orphelins: [], invoices: [], actions: {}, avertissements: [], sending: false, releve: null };
+let chargementEnCours = false;
+async function chargerReleve(alerte = null) {
+  if (chargementEnCours) return; // double clic sur « Réessayer »
+  chargementEnCours = true;
+  SEL = new Set(); OVR = {}; PICK = new Set();
+  S = { status: 'loading', progress: 'Chargement du relevé…', lines: [], orphelins: [], invoices: [], actions: {}, avertissements: [], sending: false, releve: null, alerte };
+  const etat = S;
   render();
   try {
-    // toujours le relevé le plus récent ; s'il a été clôturé, il n'y a rien à traiter (on ne revient pas à un relevé plus ancien)
-    const { data: rel, error } = await sb.from('releves').select('*').order('depose_le', { ascending: false }).limit(1);
-    if (error) throw new Error(error.message);
-    if (!rel.length || rel[0].statut === 'clos') { S.status = 'empty'; return render(); }
-    S.releve = rel[0];
-    const ops = await toutLire(() => sb.from('operations').select('*').eq('releve_id', S.releve.id).order('ordre'));
+    let ops = null;
+    for (let essai = 0; essai < 3 && !ops; essai++) {
+      // toujours le relevé le plus récent (hors dépôt en échec) ; s'il a été clôturé, il n'y a rien à traiter
+      const { data: rel, error } = await sb.from('releves').select('*').neq('statut', 'erreur').order('depose_le', { ascending: false }).limit(1);
+      if (error) throw new Error(error.message);
+      if (!rel.length || rel[0].statut === 'clos') { S.status = 'empty'; return render(); }
+      const lues = await toutLire(() => sb.from('operations').select('*').eq('releve_id', rel[0].id).order('ordre'));
+      if (rel[0].nb_encaissements != null && lues.length !== rel[0].nb_encaissements) {
+        // dépôt interrompu en cours de route : on l'écarte (jamais analysé comme s'il était complet) et on revient au précédent
+        const { error: e2 } = await sb.from('releves').update({ statut: 'erreur' }).eq('id', rel[0].id);
+        if (e2) throw new Error(`Le relevé « ${rel[0].fichier} » est incomplet (${lues.length} lignes sur ${rel[0].nb_encaissements}) : déposez-le à nouveau.`);
+        S.alerte = `Le dépôt de « ${rel[0].fichier} » était incomplet (${lues.length} lignes enregistrées sur ${rel[0].nb_encaissements}) : il a été écarté. Déposez à nouveau ce fichier.`;
+        continue;
+      }
+      S.releve = rel[0]; ops = lues;
+    }
+    if (!ops) throw new Error('Aucun relevé complet trouvé : déposez à nouveau le fichier.');
+    if (S !== etat) return;
     S.bank = ops.map((o) => ({
       id: o.op_id, banque: o.banque, ligne: o.ligne, date: o.date_valeur, libelle: o.libelle || '', info: o.info || '',
       texte: ((o.libelle || '') + ' ' + (o.info || '')).trim(), credit: Number(o.credit), debit: Number(o.debit),
@@ -386,11 +408,12 @@ async function chargerReleve() {
     // Analyse déjà enregistrée : affichage immédiat, puis relecture d'Archie en arrière-plan.
     if (S.releve.analyse_le && ops.length && ops.every((o) => o.categorie)) {
       await afficherAnalyseEnregistree(ops);
+      chargementEnCours = false;
       analyser({ arrierePlan: true });
-    } else await analyser();
+    } else { chargementEnCours = false; await analyser(); }
   } catch (e) {
-    S.status = 'error'; S.message = e.message; render();
-  }
+    if (S === etat) { S.status = 'error'; S.message = e.message; render(); }
+  } finally { chargementEnCours = false; }
 }
 
 /** Reconstruit l'écran à partir du dernier classement enregistré (sans lire Archie). */
@@ -399,7 +422,7 @@ async function afficherAnalyseEnregistree(ops) {
   const [decs, orph, pts] = await Promise.all([
     toutLire(() => sb.from('decisions').select('op_id,refus,motif,annulation_demandee').order('op_id')),
     toutLire(() => sb.from('orphelins').select('*').eq('releve_id', rid).order('orphelin_id')),
-    toutLire(() => sb.from('pointages').select('id,op_id,facture_ref,montant,resultat,quand').eq('releve_id', rid).in('resultat', ['ok', 'envoi']).order('id')),
+    toutLire(() => sb.from('pointages').select('id,op_id,facture_ref,montant,resultat,quand,message').eq('releve_id', rid).in('resultat', ['ok', 'envoi']).order('id')),
   ]);
   const decisions = Object.fromEntries(decs.map((d) => [d.op_id, d]));
   S.lines = ops.map((o) => {
@@ -431,15 +454,19 @@ async function afficherAnalyseEnregistree(ops) {
   // un envoi resté « en cours » (page rafraîchie pendant un pointage) : en cours s'il est récent, sinon interrompu et à relancer
   // (le serveur vérifie alors dans Archie s'il avait abouti avant de refaire quoi que ce soit)
   S.actions = {};
+  const faits = new Map(); // paiements déjà enregistrés par virement (utile si un envoi à plusieurs factures est resté incomplet)
   for (const p of pts) {
-    if (p.resultat === 'ok') {
-      const a = (S.actions[p.op_id] ||= { resultat: 'ok', paiements: [] });
-      if (a.paiements) a.paiements.push({ ref: p.facture_ref, montant: Number(p.montant) });
-    } else if (Date.now() - Date.parse(p.quand) < 3 * 60 * 1000) {
-      S.actions[p.op_id] = { resultat: 'envoi' };
-    } else {
-      S.actions[p.op_id] = { resultat: 'erreur', message: "Envoi interrompu (page fermée ou rafraîchie). Cochez la ligne pour réessayer : l'outil vérifie d'abord dans Archie qu'il n'a pas déjà abouti." };
-    }
+    if (p.resultat !== 'ok') continue;
+    if (!faits.has(p.op_id)) faits.set(p.op_id, []);
+    faits.get(p.op_id).push({ ref: p.facture_ref, montant: Number(p.montant), quand: p.quand });
+  }
+  for (const [op, paiements] of faits) S.actions[op] = { resultat: 'ok', paiements, quand: paiements.map((x) => x.quand).sort().pop() };
+  for (const p of pts) {
+    if (p.resultat !== 'envoi') continue;
+    const inconnu = String(p.message || '').startsWith('Résultat inconnu');
+    S.actions[p.op_id] = !inconnu && Date.now() - Date.parse(p.quand) < 3 * 60 * 1000
+      ? { resultat: 'envoi', paiements: faits.get(p.op_id) || [] }
+      : { resultat: 'erreur', paiements: faits.get(p.op_id) || [], message: inconnu ? p.message : "Envoi interrompu (page fermée ou rafraîchie). Réessayez : l'outil vérifie d'abord dans Archie qu'il n'a pas déjà abouti." };
   }
   try { await chargerAvances(); } catch (e) { S.avances = []; }
   S.avertissements = [...(S.releve.avertissements || [])];
@@ -453,6 +480,20 @@ async function afficherAnalyseEnregistree(ops) {
   S.enregistree = true;
   S.status = 'ready';
   render(); remplirFactures();
+}
+
+/**
+ * Redessine l'écran sans effacer ce que l'utilisateur est en train de saisir (texte de relance, facture choisie, montant) :
+ * si un champ de la zone de travail a le curseur, on attend qu'il le quitte.
+ */
+function renduSansCouperLaSaisie() {
+  const champ = document.activeElement;
+  const enSaisie = champ && ['TEXTAREA', 'INPUT', 'SELECT'].includes(champ.tagName) && champ.type !== 'checkbox' && champ.id !== 'q' && $('#body')?.contains(champ);
+  if (!enSaisie) return render();
+  const etat = S;
+  boutons();
+  const b = $('.file .maj'); if (b) b.outerHTML = '<span class="maj">Archie relu : l\'écran se mettra à jour dès la fin de votre saisie</span>';
+  champ.addEventListener('blur', () => setTimeout(() => { if (S === etat) render(); }, 150), { once: true });
 }
 
 /** Indicateur de relecture d'Archie (sans redessiner l'écran). */
@@ -528,6 +569,24 @@ async function analyser({ arrierePlan = false } = {}) {
       else l.annulation = true;
     }
   }
+  // Virement pointé par l'outil pour moins que son montant (envoi resté incomplet) : le moteur le classe « déjà pointé »,
+  // on signale ce qui n'est affecté à aucune facture (hors petit écart et hors trop-perçu déjà enregistré comme avance).
+  let avecAvance = new Set();
+  try { const { data } = await sb.from('avances').select('op_id'); avecAvance = new Set((data || []).map((a) => a.op_id)); } catch { /* signalé sans cette exclusion */ }
+  if (perime()) return;
+  const partiels = [];
+  for (const l of R.lines) {
+    if (l.tab !== 'deja' || l.origine !== "Pointé par l'outil" || !Array.isArray(l.deja) || avecAvance.has(l.id)) continue;
+    const reste = Math.round((l.credit - l.deja.reduce((s, p) => s + Number(p.montant || 0), 0)) * 100) / 100;
+    if (reste >= SEUIL_ECART) { l.partiel = reste; l.detail = `${l.detail || ''} — ATTENTION : ${eur(reste)} de ce virement ne sont affectés à aucune facture`; partiels.push(l); }
+  }
+  if (partiels.length) avert.push(`${partiels.length} virement(s) pointé(s) seulement en partie : ${eur(partiels.reduce((s, l) => s + l.partiel, 0))} ne sont affectés à aucune facture. Ils sont en tête de l'onglet « Déjà pointé » ; le complément est à saisir dans Archie.`);
+  // Ligne affichée « Pointé » mais que cette lecture d'Archie ne retrouve pas comme pointée : le paiement a été annulé dans Archie
+  // (procédure « Annuler ce pointage »). Elle redevient une ligne à traiter. On ne touche pas aux pointages plus récents que la lecture.
+  for (const l of R.lines) {
+    const a = S.actions[l.id];
+    if (a?.resultat === 'ok' && l.tab !== 'deja' && a.quand && Date.parse(a.quand) < debutLecture - 60000) delete S.actions[l.id];
+  }
   S.lines = R.lines; S.orphelins = R.orphelins; S.avertissements = avert;
   S.invoices = R.invoices.filter((i) => i.reste > 0.005 && ['open', 'partially_paid'].includes(i.state))
     .map((i) => ({ uuid: i.uuid, space: i.space, ref: i.ref, client: i.client, site: i.site, reste: i.reste, date: i.date, group_uuid: i.group_uuid }))
@@ -546,7 +605,7 @@ async function analyser({ arrierePlan = false } = {}) {
   S.analyse_le = new Date();
   S.enregistree = false;
   S.status = 'ready';
-  render(); remplirFactures();
+  renduSansCouperLaSaisie(); remplirFactures();
   enregistrerAnalyse().catch((e) => { if (!perime()) { S.avertissements.push(`Analyse non enregistrée : ${e.message}`); render(); } });
   journal('analyse', { resultat: `${R.lines.length} encaissements analysés${arrierePlan ? ' (relecture en arrière-plan)' : ''}` });
 }
@@ -586,7 +645,7 @@ async function deposer(fichier) {
     const fin = dates[dates.length - 1];
     let alerte = '';
     if (enCours && dejaConnues === credits.length && credits.length === connus.size) {
-      alerte = `<div class="warn">Ce fichier contient exactement les mêmes encaissements que le relevé en cours (« ${esc(enCours.releve.fichier)} »). Le déposer ne change rien : pour relire Archie, utilisez plutôt « Recharger ».</div>`;
+      alerte = `<div class="warn">Ce fichier contient exactement les mêmes encaissements que le relevé en cours (« ${esc(enCours.releve.fichier)} »). Le déposer ne change rien : pour relire Archie, utilisez plutôt « Actualiser ».</div>`;
     } else if (enCours?.releve.date_max && fin < enCours.releve.date_max) {
       alerte = `<div class="warn">Ce fichier s'arrête le <b>${dfr(fin)}</b>, avant le relevé en cours (« ${esc(enCours.releve.fichier)} », jusqu'au ${dfr(enCours.releve.date_max)}). Il deviendrait pourtant le relevé à traiter : les encaissements reçus après le ${dfr(fin)} n'apparaîtraient plus tant qu'un relevé plus récent n'est pas déposé.</div>`;
     }
@@ -597,14 +656,17 @@ async function deposer(fichier) {
        ${avertissements.map((w) => `<div class="warn">${esc(w)}</div>`).join('')}
        <p class="sub">Le relevé déposé devient le relevé à traiter. Rien n'est envoyé à Archie à cette étape.</p>`,
       'Déposer', async () => {
+        if (S?.sending) { toast('Un envoi vers Archie est en cours : attendez sa fin avant de déposer un relevé.'); return; }
         S = { status: 'loading', progress: 'Enregistrement du relevé…', lines: [], orphelins: [], invoices: [], actions: {}, avertissements: [], sending: false, releve: null };
         render();
+        let relId = null;
         try {
           const { data: rel, error } = await sb.from('releves').insert({
             fichier: fichier.name, date_min: dates[0], date_max: dates[dates.length - 1], nb_encaissements: credits.length,
             total_encaissements: Math.round(total * 100) / 100, avertissements, depose_par: USER.id,
           }).select().single();
           if (error) throw new Error(error.message);
+          relId = rel.id;
           const ordre = new Map(lignes.map((l, k) => [l.id, k]));
           const rows = credits.map((l) => ({
             releve_id: rel.id, op_id: l.id, banque: l.banque, ligne: l.ligne, ordre: ordre.get(l.id), date_valeur: l.date,
@@ -616,7 +678,11 @@ async function deposer(fichier) {
           }
           await sb.from('journal').insert({ action: 'dépôt', releve_id: rel.id, resultat: `${fichier.name} · ${credits.length} encaissements · ${eur(total)}` });
           await chargerReleve();
-        } catch (e) { S.status = 'error'; S.message = `Dépôt impossible : ${e.message}`; render(); }
+        } catch (e) {
+          // dépôt interrompu : le relevé incomplet est écarté, on revient au précédent avec un message clair
+          if (relId) await sb.from('releves').update({ statut: 'erreur' }).eq('id', relId).then(() => {}, () => {});
+          await chargerReleve(`Le dépôt de « ${fichier.name} » a échoué (${e.message}) : rien n'a changé, déposez à nouveau le fichier.`);
+        }
       });
   } catch (e) {
     toast(`Lecture impossible : ${e.message}`);
@@ -641,7 +707,7 @@ function render() {
   const m = $('#main');
   if (!S) return;
   if (S.status === 'loading') { m.innerHTML = `<div class="center"><div class="big-spin"></div><h2>Analyse en cours</h2><p>${esc(S.progress || '')}</p><p class="sub">Lecture seule : vous pouvez rafraîchir la page sans risque, la lecture reprendra.</p></div>`; $('#dock').classList.remove('show'); return; }
-  if (S.status === 'empty') { m.innerHTML = `<div class="center"><h2>Aucun relevé à traiter</h2><p>Déposez le relevé bancaire Excel le plus récent.</p><p style="margin-top:22px"><button class="btn primary" onclick="A.choisirFichier()">Déposer un relevé</button></p></div>`; $('#dock').classList.remove('show'); return; }
+  if (S.status === 'empty') { m.innerHTML = `<div class="center"><h2>Aucun relevé à traiter</h2>${S.alerte ? `<div class="warn">${esc(S.alerte)}</div>` : ''}<p>Déposez le relevé bancaire Excel le plus récent.</p><p style="margin-top:22px"><button class="btn primary" onclick="A.choisirFichier()">Déposer un relevé</button></p></div>`; $('#dock').classList.remove('show'); return; }
   if (S.status === 'error') { m.innerHTML = `<div class="center"><h2>L'analyse n'a pas abouti</h2><p>${esc(S.message)}</p><p style="margin-top:22px"><button class="btn primary" onclick="A.recharger()">Réessayer</button></p></div>`; $('#dock').classList.remove('show'); return; }
 
   const tot = S.lines.reduce((a, l) => a + l.credit, 0);
@@ -654,9 +720,10 @@ function render() {
   const okCtl = Math.abs(tot - totTabs) < 0.01;
   const quand = `${S.analyse_le.toLocaleDateString('fr-FR')} à ${S.analyse_le.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}`;
   const etatArchie = S.archieEnCours
-    ? `<span class="maj"><span class="spin"></span> Mise à jour depuis Archie — <span id="etat-archie">${esc(S.progress || '')}</span></span>`
-    : S.archieErreur ? `<span class="maj ko">Archie non relu : ${esc(S.archieErreur)} <button class="link" onclick="A.relire()">Réessayer</button></span>` : '';
+    ? `<span class="maj"><span class="spin"></span> Mise à jour depuis Archie — <span id="etat-archie">${esc(S.progress || '')}</span>${S.enregistree ? ' · validation possible ensuite' : ''}</span>`
+    : S.archieErreur ? `<span class="maj ko">Archie non relu : ${esc(S.archieErreur)} ${S.enregistree ? '· validation suspendue ' : ''}<button class="link" onclick="A.relire()">Réessayer</button></span>` : '';
   let h = `<div class="file"><b>${esc(S.releve.fichier)}</b><span>déposé le ${dfr(S.releve.depose_le.slice(0, 10))}</span><span>· ${S.enregistree ? 'dernière analyse enregistrée le' : 'analysé le'} ${quand}</span>${etatArchie}</div>`;
+  if (S.alerte) h += `<div class="warn">${esc(S.alerte)}</div>`;
   (S.avertissements || []).forEach((w) => (h += `<div class="warn">${esc(w)}</div>`));
   h += `<div class="tiles">
     ${tile('pret', 'Prêt à pointer', pretTodo.length, pretTodo.reduce((x, l) => x + l.credit, 0), pretDone.length ? `${pretDone.length} pointée(s) dans cette session` : 'Facture identifiée, montant exact')}
@@ -694,6 +761,22 @@ function statusCell(l, selectable) {
   return selectable ? `<input type="checkbox" class="cb" ${SEL.has(l.id) ? 'checked' : ''} onchange="A.tog('${l.id}',this.checked)">` : '';
 }
 const propsCell = (l) => (l.props || []).map((p) => `<div><span class="ref">${esc(p.ref)}</span> <span class="sub">${esc(p.site)}</span></div>`).join('');
+/**
+ * Vrai tant que l'écran montre l'analyse ENREGISTRÉE (pas encore relue dans Archie, ou relecture en échec) : on peut tout
+ * consulter, mais rien écrire dans Archie — une facture a pu être réglée à la main entre-temps.
+ */
+const lectureSeule = () => Boolean(S && (S.enregistree || S.archieEnCours));
+const ecritureImpossible = () => Boolean(!S || S.sending || lectureSeule());
+function refusLectureSeule() {
+  if (!lectureSeule()) return false;
+  toast(S.archieErreur ? "Archie n'a pas pu être relu : cliquez sur « Réessayer » avant de valider." : 'Validation possible dès la fin de la mise à jour depuis Archie (quelques secondes).');
+  return true;
+}
+/** Montant saisi : « 1 234,56 », « 1234.5 » ; tout autre format (« 1.234,56 ») est refusé plutôt que mal lu. */
+function lireMontant(texte) {
+  const t = String(texte ?? '').replace(/[\s  €]/g, '');
+  return /^\d+([.,]\d{1,2})?$/.test(t) ? Math.round(parseFloat(t.replace(',', '.')) * 100) / 100 : NaN;
+}
 
 /* ---- Prêt à pointer */
 function pretView() {
@@ -703,7 +786,7 @@ function pretView() {
   const sel = L.filter((l) => !isOk(l) && !isBusy(l));
   const all = sel.length && sel.every((l) => SEL.has(l.id));
   let h = `<table><thead><tr><th>Date</th><th>Client</th><th>Facture</th><th class="num">Montant</th><th>Virement</th>
-    <th class="ck"><label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer">Tout <input type="checkbox" class="cb" ${all ? 'checked' : ''} onchange="A.togAll(this.checked)" ${S.sending ? 'disabled' : ''}></label></th></tr></thead><tbody>`;
+    <th class="ck"><label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer">Tout <input type="checkbox" class="cb" ${all ? 'checked' : ''} onchange="A.togAll(this.checked)" ${ecritureImpossible() ? 'disabled' : ''}></label></th></tr></thead><tbody>`;
   for (const l of L) {
     const cli = [...new Set((l.props || []).map((p) => p.client))].join(', ');
     h += `<tr class="${isOk(l) ? 'ok' : isErr(l) ? 'err' : ''}"><td class="date">${dfr(l.date)}</td>
@@ -711,19 +794,20 @@ function pretView() {
       <td class="prop">${propsCell(l)}</td>
       <td class="num strong">${eur(l.credit)}</td>
       <td><div class="lib" title="${esc(l.texte)}">${esc(l.texte)}</div><div class="sub">${esc(l.banque)}</div>${isErr(l) ? `<div class="errmsg">${esc(act(l).message)}</div>` : ''}</td>
-      <td class="ck">${statusCell(l, !S.sending)}</td></tr>`;
+      <td class="ck">${statusCell(l, !ecritureImpossible())}</td></tr>`;
   }
   return h + `</tbody></table>`;
 }
 function dock() {
   const d = $('#dock');
-  const L = S.lines.filter((l) => SEL.has(l.id) && !isOk(l));
-  if (TAB !== 'pret' || !L.length || S.sending) { d.classList.remove('show'); return; }
+  const L = S.lines.filter((l) => SEL.has(l.id) && l.tab === 'pret' && !isOk(l) && !isBusy(l));
+  if (TAB !== 'pret' || !L.length || ecritureImpossible()) { d.classList.remove('show'); return; }
   $('#dock-sum').innerHTML = `<b>${L.length}</b> ligne(s) sélectionnée(s) · <b>${eur(L.reduce((x, l) => x + l.credit, 0))}</b>`;
   d.classList.add('show');
 }
 function validerSel() {
-  const L = S.lines.filter((l) => SEL.has(l.id) && !isOk(l));
+  if (S.sending || refusLectureSeule()) return;
+  const L = S.lines.filter((l) => SEL.has(l.id) && l.tab === 'pret' && !isOk(l) && !isBusy(l) && (l.props || []).length);
   if (!L.length) return;
   const nbp = L.reduce((x, l) => x + l.props.length, 0);
   confirmBox('Enregistrer dans Archie ?',
@@ -750,29 +834,41 @@ function majTravail() {
 }
 
 async function envoyer(items) {
-  items.forEach((i) => { S.actions[i.id] = { resultat: 'envoi' }; SEL.delete(i.id); });
-  S.sending = true; renderBody(); boutons();
+  const etat = S; // l'envoi se termine sur l'état qui l'a lancé, même si l'écran change entre-temps
+  if (!etat || etat.sending || refusLectureSeule()) return;
+  // dernière vérification au moment du clic : la ligne existe toujours, est encore à traiter et n'est pas déjà pointée ou en cours
+  items = items.filter((i) => {
+    const l = etat.lines.find((x) => x.id === i.id), a = etat.actions[i.id];
+    return l && ['pret', 'verif'].includes(l.tab) && !['ok', 'envoi'].includes(a?.resultat) && i.props.length;
+  });
+  if (!items.length) { toast('Rien à envoyer : ces lignes ont changé depuis la sélection.'); renderBody(); return; }
+  items.forEach((i) => { etat.actions[i.id] = { resultat: 'envoi' }; SEL.delete(i.id); });
+  etat.sending = true; renderBody(); boutons();
   const debut = Date.now();
   travail({ titre: 'Pointage en cours dans Archie', fait: 0, total: items.length, unite: 'lignes', debut, parPas: D.memoire.lire('sec_par_ligne', 1.5) });
-  for (let k = 0; k < items.length; k += LOT_ENVOI) {
-    const lot = items.slice(k, k + LOT_ENVOI);
-    const { data, error } = await sb.functions.invoke('pointer', { body: { releve_id: S.releve.id, items: lot.map((i) => ({ op_id: i.id, props: i.props })) } });
-    if (error) {
-      const msg = await erreurFonction(error);
-      lot.forEach((i) => (S.actions[i.id] = { resultat: 'erreur', message: msg }));
-    } else {
-      for (const r of data.resultats) S.actions[r.op_id] = r;
+  try {
+    for (let k = 0; k < items.length; k += LOT_ENVOI) {
+      const lot = items.slice(k, k + LOT_ENVOI);
+      let data = null, msg = null;
+      try {
+        const r = await sb.functions.invoke('pointer', { body: { releve_id: etat.releve.id, items: lot.map((i) => ({ op_id: i.id, props: i.props })) } });
+        if (r.error) msg = await erreurFonction(r.error); else data = r.data;
+      } catch (e) { msg = e.message; }
+      const recus = new Map((Array.isArray(data?.resultats) ? data.resultats : []).map((r) => [r.op_id, r]));
+      // une ligne sans réponse lisible n'est jamais supposée réussie : le prochain essai vérifiera dans Archie
+      for (const i of lot) etat.actions[i.id] = recus.get(i.id) || { resultat: 'erreur', message: msg || "Réponse illisible : réessayez, l'outil vérifiera d'abord dans Archie." };
+      if (TRAVAIL) { TRAVAIL.fait = Math.min(items.length, k + lot.length); majTravail(); }
+      if (S === etat) renderBody();
     }
-    TRAVAIL.fait = Math.min(items.length, k + lot.length); majTravail();
-    renderBody();
+    D.memoire.ecrire('sec_par_ligne', ((Date.now() - debut) / 1000 / items.length).toFixed(2));
+  } finally {
+    travail(null);
+    etat.sending = false;
   }
-  D.memoire.ecrire('sec_par_ligne', ((Date.now() - debut) / 1000 / items.length).toFixed(2));
-  travail(null);
-  S.sending = false;
-  const avances = items.filter((i) => S.actions[i.id]?.avance).length;
-  if (avances) { try { await chargerAvances(); } catch { /* affichée au prochain chargement */ } }
-  render(); boutons();
-  const ko = items.filter((i) => S.actions[i.id]?.resultat !== 'ok').length;
+  const avances = items.filter((i) => etat.actions[i.id]?.avance).length;
+  if (avances && S === etat) { try { await chargerAvances(); } catch { /* affichée au prochain chargement */ } }
+  if (S === etat) { render(); boutons(); }
+  const ko = items.filter((i) => etat.actions[i.id]?.resultat !== 'ok').length;
   toast((ko ? `Envoi terminé : ${ko} ligne(s) en échec` : 'Envoi terminé') + (avances ? ` · ${avances} avance(s) client enregistrée(s)` : ''));
 }
 
@@ -798,7 +894,7 @@ function verifView() {
         <td class="date">${dfr(l.date)}</td><td class="num strong">${eur(l.credit)}</td>
         <td><div class="lib" title="${esc(l.texte)}">${esc(l.texte)}</div><div class="expl">${esc(l.detail)}${esc(petitEcart(l))}</div><div class="sub">${esc(l.banque)}</div>${isErr(l) ? `<div class="errmsg">${esc(act(l).message)}</div>` : ''}${isOk(l) && act(l).avance ? `<div class="expl">Avance de ${eur(act(l).avance.montant)} enregistrée${act(l).avertissement ? ' — ' + esc(act(l).avertissement) : ''}</div>` : ''}</td>
         <td class="propcell">${proposition(l)}</td>
-        <td class="num">${isOk(l) ? `<span class="done"><i></i>Pointé</span>` : isBusy(l) ? '<span class="spin"></span>' : `<div class="acts"><button class="btn sm danger" onclick="A.refuserBox(['${l.id}'],'cette ligne')" ${S.sending ? 'disabled' : ''}>Refuser</button><button class="btn sm primary" onclick="A.validerUne('${l.id}')" ${propsFor(l).length && !S.sending ? '' : 'disabled'}>Valider</button></div>`}</td></tr>`;
+        <td class="num">${isOk(l) ? `<span class="done"><i></i>Pointé</span>` : isBusy(l) ? '<span class="spin"></span>' : `<div class="acts"><button class="btn sm danger" onclick="A.refuserBox(['${l.id}'],'cette ligne')" ${S.sending ? 'disabled' : ''}>Refuser</button><button class="btn sm primary" onclick="A.validerUne('${l.id}')" ${propsFor(l).length && !ecritureImpossible() ? '' : 'disabled'}>Valider</button></div>`}</td></tr>`;
     }
     h += `</tbody></table>`;
   }
@@ -834,7 +930,7 @@ function avancesView() {
       <td class="date">${dfr(a.date_virement)}<div class="sub">${esc(a.par_email || '')}</div></td>
       <td class="num strong">${eur(a.restant)}${a.montant_impute > 0 ? `<div class="sub">sur ${eur(a.montant)}</div>` : ''}</td>
       <td>${choix}</td>
-      <td class="num"><div class="acts"><button class="btn sm" onclick="A.emailBox('${a.id}')">Email préparé</button><button class="btn sm primary" onclick="A.imputerBox('${a.id}')" ${F.length && !S.sending ? '' : 'disabled'}>Imputer</button></div></td></tr>`;
+      <td class="num"><div class="acts"><button class="btn sm" onclick="A.emailBox('${a.id}')">Email préparé</button><button class="btn sm primary" onclick="A.imputerBox('${a.id}')" ${F.length && !ecritureImpossible() ? '' : 'disabled'}>Imputer</button></div></td></tr>`;
   }
   return h + `</tbody></table>`;
 }
@@ -844,26 +940,29 @@ function impMontant(id) {
   if (a && i) $(`#imp-m-${id}`).value = String(Math.min(a.restant, i.reste).toFixed(2)).replace('.', ',');
 }
 function imputerBox(id) {
+  if (S.sending || refusLectureSeule()) return;
+  const etat = S;
   const a = S.avances.find((x) => x.id === id);
   const i = S.invoices.find((x) => x.uuid === $(`#imp-f-${id}`)?.value);
-  const m = Math.round(parseFloat(String($(`#imp-m-${id}`)?.value || '').replace(/\s/g, '').replace(',', '.')) * 100) / 100;
+  const m = lireMontant($(`#imp-m-${id}`)?.value);
   if (!a || !i) return;
-  if (!(m > 0) || m > a.restant + 0.005 || m > i.reste + 0.005) { toast(`Montant invalide (au plus ${eur(Math.min(a.restant, i.reste))})`); return; }
+  if (!(m > 0) || m > a.restant + 0.005 || m > i.reste + 0.005) { toast(`Montant invalide (au plus ${eur(Math.min(a.restant, i.reste))}, format 1234,56)`); return; }
   confirmBox('Imputer cette avance ?',
     `<div class="kv"><span>Client</span><b>${esc(a.client)}</b><span>Avance</span><b>${eur(a.restant)} (virement du ${dfr(a.date_virement)})</b><span>Facture</span><b>${esc(i.ref)} · ${esc(i.site)}</b><span>Montant imputé</span><b>${eur(m)}</b><span>Mode</span><b>Trop-Perçu</b><span>Date du paiement</span><b>aujourd'hui</b><span>Email au client</span><b>Non</b></div>
      <p class="sub">Une fois enregistré, un paiement ne peut être annulé que dans Archie.</p>`,
     'Imputer', async () => {
-      S.sending = true; renderBody(); boutons();
+      if (S !== etat || etat.sending || refusLectureSeule()) return;
+      etat.sending = true; renderBody(); boutons();
       travail({ titre: 'Imputation en cours dans Archie', fait: 0, total: 0, unite: '', debut: Date.now(), parPas: 5 });
-      const { data, error } = await sb.functions.invoke('imputer', { body: { avance_id: a.id, facture_uuid: i.uuid, space: i.space, montant: m } });
-      travail(null);
-      S.sending = false;
-      if (error) { toast(await erreurFonction(error)); renderBody(); boutons(); return; }
-      if (data.resultat !== 'ok') { toast(`Imputation refusée : ${data.message}`); renderBody(); boutons(); return; }
-      i.reste = Math.round((i.reste - m) * 100) / 100;
-      await chargerAvances();
-      render(); remplirFactures();
-      toast(`Avance imputée sur ${data.facture_ref} : ${eur(data.montant)}`);
+      let data = null, message = null;
+      try {
+        const r = await sb.functions.invoke('imputer', { body: { avance_id: a.id, facture_uuid: i.uuid, space: i.space, montant: m } });
+        if (r.error) message = await erreurFonction(r.error); else data = r.data;
+      } catch (e) { message = e.message; } finally { travail(null); etat.sending = false; }
+      if (data?.resultat === 'ok') i.reste = Math.round((i.reste - m) * 100) / 100;
+      // dans tous les cas on relit les avances : une imputation précédente a pu être retrouvée dans Archie
+      if (S === etat) { try { await chargerAvances(); } catch (e) { console.warn('Avances non rechargées :', e.message); } render(); remplirFactures(); boutons(); }
+      toast(data?.resultat === 'ok' ? `Avance imputée sur ${data.facture_ref} : ${eur(data.montant)}` : `Imputation non faite : ${data?.message || message || 'réponse illisible'}`);
     });
 }
 function emailBox(id) {
@@ -882,8 +981,11 @@ function emailBox(id) {
 function propsFor(l) {
   const o = OVR[l.id];
   if (o) return o.uuid ? [o] : [];
+  if (PICK.has(l.id)) return []; // « Choisir une autre facture » ouvert sans choix : la proposition écartée ne part pas
   return (l.props || []).map((p) => ({ uuid: p.uuid, space: p.space, montant: p.montant, ref: p.ref, client: p.client }));
 }
+/** Ce qui reste à affecter sur un virement : son montant moins les paiements déjà enregistrés pour lui (pointage incomplet). */
+const resteAAffecter = (l) => Math.round((l.credit - (act(l)?.paiements || []).reduce((s, p) => s + Number(p.montant || 0), 0)) * 100) / 100;
 function proposition(l) {
   if (isOk(l)) return (act(l).paiements || []).map((p) => `<div class="prop"><span class="ref">${esc(p.ref)}</span> · ${eur(p.montant)}</div>`).join('');
   const o = OVR[l.id];
@@ -903,17 +1005,19 @@ function choisir(id, val) {
   const i = S.invoices.find((x) => x.ref === ref);
   const l = S.lines.find((x) => x.id === id);
   if (!i) { delete OVR[id]; toast('Facture introuvable parmi les factures ouvertes'); renderBody(); return; }
-  OVR[id] = { uuid: i.uuid, space: i.space, ref: i.ref, client: i.client, label: invLabel(i), montant: Math.min(l.credit, i.reste) };
+  OVR[id] = { uuid: i.uuid, space: i.space, ref: i.ref, client: i.client, label: invLabel(i), montant: Math.max(0, Math.min(resteAAffecter(l), i.reste)) };
   renderBody();
 }
 function montant(id, val) {
   const o = OVR[id]; if (!o) return;
-  const v = parseFloat(String(val).replace(/\s/g, '').replace(',', '.'));
-  if (!Number.isNaN(v) && v > 0) o.montant = Math.round(v * 100) / 100;
+  const v = lireMontant(val);
+  if (v > 0) o.montant = v; else toast('Montant non compris : écrivez-le sous la forme 1234,56');
   renderBody();
 }
 function validerUne(id) {
-  const l = S.lines.find((x) => x.id === id); const P = propsFor(l);
+  if (S.sending || refusLectureSeule()) return;
+  const l = S.lines.find((x) => x.id === id); if (!l) return;
+  const P = propsFor(l).filter((p) => p.montant > 0);
   if (!P.length) return;
   const tot = P.reduce((x, p) => x + p.montant, 0);
   confirmBox('Pointer ce virement ?',
@@ -941,12 +1045,14 @@ function coteView() {
 /* ---- Déjà pointé */
 function dejaView() {
   const L = inTab('deja').filter(match);
-  L.sort((a, b) => a.date.localeCompare(b.date));
+  // les virements pointés seulement en partie d'abord (repérés aussi après réouverture, grâce au texte enregistré)
+  const partiel = (l) => (l.partiel || (l.detail || '').includes('ATTENTION :') ? 1 : 0);
+  L.sort((a, b) => partiel(b) - partiel(a) || a.date.localeCompare(b.date));
   if (!L.length) return `<div class="empty">Aucune ligne.</div>`;
   let h = `<table><thead><tr><th>Origine</th><th>Date</th><th class="num">Montant</th><th>Virement</th><th>Pointé sur</th><th class="num">Action</th></tr></thead><tbody>`;
   for (const l of L) {
     const outil = l.origine === "Pointé par l'outil";
-    h += `<tr><td><span class="badge ${outil ? 'b-outil' : 'b-archiem'}">${esc(l.origine)}</span></td><td class="date">${dfr(l.date)}</td><td class="num strong">${eur(l.credit)}</td>
+    h += `<tr><td><span class="badge ${outil ? 'b-outil' : 'b-archiem'}">${esc(l.origine)}</span>${partiel(l) ? '<div style="margin-top:4px"><span class="badge b-refus">Partiel</span></div>' : ''}</td><td class="date">${dfr(l.date)}</td><td class="num strong">${eur(l.credit)}</td>
       <td><div class="lib" title="${esc(l.texte)}">${esc(l.texte)}</div><div class="sub">${esc(l.banque)}</div></td><td class="prop">${esc(l.detail)}</td>
       <td class="num">${l.annulation ? '<span class="badge b-refus">Annulation demandée</span>' : `<button class="btn sm" onclick="A.annulerBox('${l.id}')">Annuler ce pointage</button>`}</td></tr>`;
   }
@@ -979,9 +1085,9 @@ async function refuser(ids, motif) {
     if (!l || !['pret', 'verif'].includes(l.tab) || ['ok', 'envoi'].includes(act(l)?.resultat)) continue;
     rows.push({ op_id: id, refus: true, motif: motif || '', annulation_demandee: false, par: USER.id, par_email: USER.email, quand });
   }
-  if (!rows.length) return;
+  if (!rows.length) return false;
   const { error } = await sb.from('decisions').upsert(rows, { onConflict: 'op_id' });
-  if (error) { toast(`Refus non enregistré : ${error.message}`); return; }
+  if (error) { toast(`Refus non enregistré : ${error.message}`); return false; }
   for (const r of rows) {
     if (r.op_id.startsWith('A')) {
       const o = S.orphelins.find((x) => x.id === r.op_id); if (o) o.vu = true;
@@ -989,11 +1095,13 @@ async function refuser(ids, motif) {
       continue;
     }
     const l = S.lines.find((x) => x.id === r.op_id);
+    if (!l) continue;
     l.tab_origine = l.tab; l.tab = 'cote'; l.refuse = true; l.motif = 'Refusé' + (motif ? ` : ${motif}` : '');
     SEL.delete(l.id);
     journal('refus', { op_id: l.id, montant: l.credit, resultat: l.motif });
   }
   render();
+  return true;
 }
 async function remettre(id) {
   const { error } = await sb.from('decisions').delete().eq('op_id', id);
@@ -1025,7 +1133,7 @@ function refuserBox(ids, what) {
   $('#modal').innerHTML = `<h3>Refuser ${esc(what)} ?</h3><p>La ligne part dans « Mis de côté ». Vous pourrez la remettre à traiter à tout moment.</p>
     <textarea id="motif" rows="2" placeholder="Motif (facultatif) : ex. remboursement, client à relancer…"></textarea>
     <div class="row"><button class="btn" onclick="A.fermer()">Annuler</button><button class="btn danger" id="mok">Refuser</button></div>`;
-  $('#mok').onclick = async () => { const m = $('#motif').value.trim(); closeM(); await refuser(ids, m); toast('Ligne(s) mise(s) de côté'); };
+  $('#mok').onclick = async () => { const m = $('#motif').value.trim(); closeM(); if (await refuser(ids, m)) toast('Ligne(s) mise(s) de côté'); };
   $('#mbg').classList.add('show');
 }
 function annulerBox(id) {
@@ -1033,7 +1141,7 @@ function annulerBox(id) {
   $('#modal').innerHTML = `<h3>Annuler ce pointage</h3>
     <p>Archie ne permet pas d'annuler un paiement automatiquement. Pour l'annuler :</p>
     <div class="kv"><span>Virement</span><b>${eur(l.credit)} du ${dfr(l.date)}</b><span>Pointé sur</span><b>${esc(l.detail)}</b></div>
-    <p>1. Ouvrez la facture dans Archie, menu « Historique ».<br>2. Sur la ligne « Paiement », cliquez sur « … » puis annulez le paiement.<br>3. Relancez l'analyse : la ligne reviendra dans « Prêt à pointer » ou « À vérifier ».</p>
+    <p>1. Ouvrez la facture dans Archie, menu « Historique ».<br>2. Sur la ligne « Paiement », cliquez sur « … » puis annulez le paiement.<br>3. Cliquez sur « Actualiser » : la ligne reviendra dans « Prêt à pointer » ou « À vérifier ».</p>
     <div class="row"><button class="btn" onclick="A.fermer()">Fermer</button><button class="btn primary" id="mok">Noter l'annulation demandée</button></div>`;
   $('#mok').onclick = () => { closeM(); demanderAnnulation(id); };
   $('#mbg').classList.add('show');

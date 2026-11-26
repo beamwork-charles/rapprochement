@@ -73,14 +73,16 @@ export async function lireReleve(XLSX, data) {
       if (!first || first.length < 3) { warn.push(`Onglet « ${banque} » ignoré : format non reconnu`); continue; }
       cDate = 0; cLib = 1; cAmt = 2; cInfo = null; start = 0;
     }
+    const illisibles = []; // montants écrits en texte dans un format non reconnu : lus 0, donc signalés (jamais ignorés en silence)
+    const verifier = (cell, ligne) => { if (cell && typeof cell.v === 'string' && /\d/.test(cell.v) && N(cell) === 0 && !/^[\s  €+-]*0+([.,]0+)?[\s  €]*$/.test(cell.v)) illisibles.push(ligne); };
     for (let i = start; i < rows.length; i++) {
       const r = rows[i];
       if (!r || r.length <= cLib) continue;
       const d = cDate < r.length ? D(XLSX, r[cDate]) : null;
       if (!d) continue;
       let cr, db;
-      if (cAmt !== null) { const a = N(r[cAmt]); [cr, db] = a > 0 ? [a, 0] : [0, -a]; }
-      else { cr = cCr !== null ? N(r[cCr]) : 0; db = cDb !== null ? N(r[cDb]) : 0; }
+      if (cAmt !== null) { verifier(r[cAmt], i + 1); const a = N(r[cAmt]); [cr, db] = a > 0 ? [a, 0] : [0, -a]; }
+      else { if (cCr !== null) verifier(r[cCr], i + 1); cr = cCr !== null ? N(r[cCr]) : 0; db = cDb !== null ? N(r[cDb]) : 0; }
       const lib = S(r[cLib] && r[cLib].v);
       const info = cInfo !== null ? S(r[cInfo] && r[cInfo].v) : '';
       out.push({
@@ -88,6 +90,7 @@ export async function lireReleve(XLSX, data) {
         credit: Math.round(cr * 100) / 100, debit: Math.round(db * 100) / 100,
       });
     }
+    if (illisibles.length) warn.push(`Onglet « ${banque} » : ${illisibles.length} montant(s) dans un format non reconnu (ligne${illisibles.length > 1 ? 's' : ''} ${illisibles.slice(0, 8).join(', ')}${illisibles.length > 8 ? '…' : ''}) — ces encaissements ne sont PAS pris en compte : corrigez le fichier ou vérifiez-les à la main.`);
   }
   // identifiant stable d'une opération (même si elle réapparaît dans un relevé suivant)
   const seen = new Map();

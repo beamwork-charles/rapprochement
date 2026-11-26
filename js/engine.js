@@ -1,6 +1,6 @@
 // Rapprochement relevé bancaire <-> factures Archie — portage fidèle de src_reference/engine.py.
 // Pur calcul : aucune écriture. Les dates sont des chaînes AAAA-MM-JJ.
-import { unidecode } from './releve.js?v=20261126-17';
+import { unidecode } from './releve.js?v=20261126-18';
 
 export const TOL = 0.05;
 const TAG_RE = /\[RAPPRO:([0-9a-f]{10})\]/;
@@ -46,15 +46,21 @@ export function categ(l) {
   return 'Client';
 }
 
+/**
+ * Références de factures dans un libellé : [préfixe ('FAC', 'FA02'… ou '?'), numéro sur 6 chiffres, année].
+ * Écart volontaire avec engine.py (qui ne connaît que « 2026 ») : l'année est lue (2020-2039) et fait partie de la clé,
+ * sinon plus aucune référence ne serait reconnue à partir des factures 2027, et FAC-2026-000123 se confondrait avec
+ * FAC-2027-000123. Pour les factures 2026, le résultat est identique.
+ */
 export function refs(text) {
   const c = unidecode(text).toUpperCase().replace(/[\s\-_/.:]/g, '');
   const res = [];
-  for (const m of c.matchAll(/(FAC|FACT(?:URE)?0([234])|FA0?([234])|0([234]))2026(\d{6}|\d{4}(?!\d))/g)) {
+  for (const m of c.matchAll(/(FAC|FACT(?:URE)?0([234])|FA0?([234])|0([234]))(20[23]\d)(\d{6}|\d{4}(?!\d))/g)) {
     const p = m[1] === 'FAC' ? 'FAC' : 'FA0' + (m[2] || m[3] || m[4]);
-    res.push([p, m[5].padStart(6, '0')]);
+    res.push([p, m[6].padStart(6, '0'), m[5]]);
   }
-  for (const m of c.matchAll(/(?<!\d)2026(\d{6})(?!\d)/g)) {
-    if (!res.some((r) => r[1] === m[1])) res.push(['?', m[1]]);
+  for (const m of c.matchAll(/(?<!\d)(20[23]\d)(\d{6})(?!\d)/g)) {
+    if (!res.some((r) => r[1] === m[2] && r[2] === m[1])) res.push(['?', m[2], m[1]]);
   }
   const vus = new Set();
   return res.filter((r) => { const k = r.join('|'); if (vus.has(k)) return false; vus.add(k); return true; });
@@ -192,8 +198,8 @@ const byKey = (keyFn) => (a, b) => { const ka = keyFn(a), kb = keyFn(b); for (le
  */
 export function run(bank, inv, pay, decisions) {
   for (const i of inv) {
-    const m = (i.ref || '').match(/^(FAC|FA0\d)-2026-(\d+)/);
-    i.key = m ? [m[1], m[2].padStart(6, '0')] : null;
+    const m = (i.ref || '').match(/^(FAC|FA0\d)-(20\d{2})-(\d+)/);
+    i.key = m ? [m[1], m[3].padStart(6, '0'), m[2]] : null; // préfixe, numéro, année
     i.reste_cur = i.reste;
     i.core = core(i.client);
     i.vars = variants(i.client);
@@ -201,7 +207,8 @@ export function run(bank, inv, pay, decisions) {
   }
   const byKeyMap = new Map(), byNum = new Map();
   for (const i of inv) if (i.key) byKeyMap.set(i.key.join('|'), i);
-  for (const i of inv) if (i.key) { if (!byNum.has(i.key[1])) byNum.set(i.key[1], []); byNum.get(i.key[1]).push(i); }
+  const cleNum = (num, annee) => annee + '|' + num;
+  for (const i of inv) if (i.key) { const k = cleNum(i.key[1], i.key[2]); if (!byNum.has(k)) byNum.set(k, []); byNum.get(k).push(i); }
   const invByUuid = new Map(inv.map((i) => [i.uuid, i]));
 
   const lines = bank.filter((l) => l.credit > 0).map((l) => ({ ...l }));
@@ -228,10 +235,10 @@ export function run(bank, inv, pay, decisions) {
   const payCore = (p) => (p._vars ??= variants(p.client));
   const linked = (p, l) => {
     if (p.facture) {
-      const m = p.facture.match(/^(FAC|FA0\d)-\d{4}-(\d+)/);
+      const m = p.facture.match(/^(FAC|FA0\d)-(\d{4})-(\d+)/);
       if (m) {
-        const num = m[2].padStart(6, '0');
-        for (const [a, b] of l.refs) if (b === num && (a === '?' || a === m[1])) return true;
+        const num = m[3].padStart(6, '0');
+        for (const [a, b, annee] of l.refs) if (b === num && annee === m[2] && (a === '?' || a === m[1])) return true;
       }
     }
     return nameScore(payCore(p), l.norm) >= 90;
@@ -311,12 +318,12 @@ export function run(bank, inv, pay, decisions) {
   for (const l of order) {
     const A = l.credit;
     let found = [];
-    for (const [p, n] of l.refs) {
+    for (const [p, n, annee] of l.refs) {
       if (p !== '?') {
-        const i = byKeyMap.get(p + '|' + n);
+        const i = byKeyMap.get(p + '|' + n + '|' + annee);
         if (i) found.push(i);
       } else {
-        let c = byNum.get(n) || [];
+        let c = byNum.get(cleNum(n, annee)) || [];
         if (c.length > 1) {
           let c2 = c.filter((i) => nameScore(i.vars, l.norm) >= 88);
           if (!c2.length) c2 = c.filter((i) => Math.abs(i.reste_cur - A) <= TOL);
