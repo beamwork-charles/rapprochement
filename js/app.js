@@ -1,9 +1,9 @@
 // Écran « Pointage » : connexion, dépôt du relevé, analyse (moteur dans le navigateur), validation vers Archie.
 // Portage de src_reference/ui/index.html + server.py sur Supabase.
-import { lireReleve } from './releve.js?v=20261126-13';
-import * as E from './engine.js?v=20261126-13';
-import * as RL from './relances.js?v=20261126-13';
-import * as D from './relances-donnees.js?v=20261126-13';
+import { lireReleve } from './releve.js?v=20261126-14';
+import * as E from './engine.js?v=20261126-14';
+import * as RL from './relances.js?v=20261126-14';
+import * as D from './relances-donnees.js?v=20261126-14';
 
 const C = window.CONFIG || {};
 const XLSX = window.XLSX;
@@ -18,7 +18,7 @@ const dfr = (s) => (s ? s.slice(8, 10) + '/' + s.slice(5, 7) + '/' + s.slice(0, 
 const jsq = (s) => esc(JSON.stringify(String(s))); // chaîne sûre dans un attribut onclick
 const estMembre = (e) => String(e || '').toLowerCase().endsWith('@' + C.DOMAINE);
 
-let sb = null, USER = null, courant;
+let sb = null, USER = null, NOM = '', courant;
 let S = null; // état de l'écran
 let TAB = 'pret', SEL = new Set(), Q = '', HIDE = false, FILT = { verif: '', cote: '' }, OVR = {}, PICK = new Set();
 const TABS = { pret: 'Prêt à pointer', verif: 'À vérifier', cote: 'Mis de côté', deja: 'Déjà pointé' };
@@ -29,7 +29,7 @@ function toast(t) { const e = $('#toast'); e.textContent = t; e.classList.add('s
 function vue(html) { $('#main').innerHTML = html; }
 function boutons() {
   const co = Boolean(USER), pret = S && S.status === 'ready';
-  $('#b-out').hidden = !co; $('#b-nom').hidden = !co; $('#b-deposer').hidden = !co; $('#b-excel').hidden = !co;
+  $('#b-out').hidden = !co; $('#b-deposer').hidden = !co; $('#b-excel').hidden = !co;
   $('#b-reload').hidden = !co || !S?.releve; $('#b-clore').hidden = !co || !S?.releve;
   const occupe = !S || S.status === 'loading' || S.sending;
   $('#b-deposer').disabled = occupe; $('#b-reload').disabled = occupe || !pret || S.archieEnCours; $('#b-clore').disabled = occupe || !pret || S.archieEnCours;
@@ -96,9 +96,12 @@ async function calculerRelances(factures) {
 }
 /** Relit seulement les factures ouvertes dans Archie (plus rapide qu'une analyse complète). */
 async function actualiserRelances() {
-  S.relancesEnCours = true; renderBody();
+  S.relancesEnCours = true; S.relancesProgression = "Lecture d'Archie…"; renderBody();
   try {
-    await calculerRelances(await D.lireOuvertes(appelFonction));
+    await calculerRelances(await D.lireOuvertes(appelFonction, (texte) => {
+      S.relancesProgression = texte;
+      const b = $('#b-act-rel'); if (b) b.textContent = texte;
+    }));
     toast('Relances actualisées');
   } catch (e) { toast(`Actualisation impossible : ${e.message}`); }
   S.relancesEnCours = false; render();
@@ -186,7 +189,7 @@ function relancesView() {
   let h = `<div class="info"><b>${R.actives ? 'Relances activées' : 'Lecture seule : aucune relance n\'est envoyée.'}</b>
     Dernier relevé analysé le ${R.dernierReleve ? dfr(R.dernierReleve) : '—'}${R.suspendues ? ' — <b>plus de 2 jours ouvrés : les envois seraient suspendus</b>' : ''}.
     Calcul du ${R.calcule_le.toLocaleDateString('fr-FR')} à ${R.calcule_le.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}.
-    <button class="btn sm" style="margin-left:8px" onclick="A.actualiserRelances()" ${S.relancesEnCours ? 'disabled' : ''}>${S.relancesEnCours ? 'Lecture d\'Archie…' : 'Actualiser'}</button>
+    <button class="btn sm" id="b-act-rel" style="margin-left:8px" onclick="A.actualiserRelances()" ${S.relancesEnCours || S.archieEnCours ? 'disabled' : ''}>${S.relancesEnCours ? esc(S.relancesProgression || "Lecture d'Archie…") : S.archieEnCours ? 'Mise à jour en cours…' : 'Actualiser'}</button>
     <button class="btn sm" onclick="A.vueRelances('textes')">Textes des relances</button></div>
     <div class="modal" style="width:auto;max-width:none;box-shadow:none;border:1px solid var(--line);padding:16px 20px"><div class="kv" style="grid-template-columns:260px 1fr;margin:0">
       <span>Clients à relancer</span><b>${actifs.length} · ${actifs.reduce((s, c) => s + c.factures.length, 0)} factures · ${eur(tot(actifs))}</b>
@@ -250,7 +253,7 @@ async function excelBox(nouvelleAdresse) {
   $('#mok').onclick = async () => {
     const octets = crypto.getRandomValues(new Uint8Array(32));
     const jeton = btoa(String.fromCharCode(...octets)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-    const { error } = await sb.from('jetons_export').insert({ empreinte: await sha256hex(jeton), libelle: `Excel de ${$('#nom').value || USER.email}`, cree_par: USER.id });
+    const { error } = await sb.from('jetons_export').insert({ empreinte: await sha256hex(jeton), libelle: `Excel de ${NOM || USER.email}`, cree_par: USER.id });
     if (error) { toast(`Création impossible : ${error.message}`); return; }
     journal('adresse Excel créée', { resultat: `par ${USER.email}` });
     excelBox(`${C.SUPABASE_URL}/functions/v1/export?jeton=${jeton}`);
@@ -286,10 +289,10 @@ async function toutLire(fabrique) {
 }
 
 // ============================================================================ connexion
-function vueConfig() { vue(`<div class="center"><h2>Configuration en attente</h2><p>L'outil n'est pas encore relié à sa base.</p></div>`); }
+function vueConfig() { montrerEcran(); vue(`<div class="center"><h2>Configuration en attente</h2><p>L'outil n'est pas encore relié à sa base.</p></div>`); }
 
 function vueConnexion(msg) {
-  USER = null; S = null; boutons(); $('#dock').classList.remove('show');
+  USER = null; S = null; montrerEcran(); boutons(); $('#dock').classList.remove('show');
   vue(`<div class="center"><h2>Connexion</h2><p>Saisissez votre adresse @${esc(C.DOMAINE)} : un lien de connexion vous sera envoyé.</p>
     <form class="form" id="f-login">
       <input id="email" type="email" autocomplete="email" placeholder="prenom@${esc(C.DOMAINE)}" required>
@@ -314,17 +317,24 @@ async function afficher(session) {
   courant = user ? user.id : null;
   if (!user) return vueConnexion();
   if (!estMembre(user.email)) { await sb.auth.signOut(); return vueConnexion(`Adresse @${C.DOMAINE} uniquement.`); }
-  // accès « suivi seul » (Oscar) : uniquement la page Suivi niveau 5 — la base et les fonctions le refusent de toute façon
+  // accès « suivi seul » (Oscar) : il arrive directement sur la page Suivi niveau 5, sans rien voir de cet écran
+  // (la base et les fonctions lui refusent de toute façon le pointage)
   const { data: acces } = await sb.rpc('mon_acces');
   if (acces === 'suivi') { location.replace('suivi.html'); return; }
+  montrerEcran();
   USER = user;
-  await sb.from('profils').upsert({ id: user.id, email: user.email }, { onConflict: 'id', ignoreDuplicates: true });
-  const { data } = await sb.from('profils').select('nom').eq('id', user.id).maybeSingle();
-  const defaut = user.email.split('@')[0].replace(/[._-]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
-  $('#nom').value = data?.nom || defaut;
-  if (!data?.nom) sb.from('profils').update({ nom: defaut }).eq('id', user.id).then(() => {});
+  NOM = nomDepuisEmail(user.email);
+  // nom affiché dans Archie (« validé par ») : toujours celui de l'adresse email
+  sb.from('profils').upsert({ id: user.id, email: user.email, nom: NOM }, { onConflict: 'id' }).then(({ error }) => { if (error) console.warn('Profil :', error.message); });
   await chargerReleve();
 }
+/** Prénom (et nom) tirés de l'adresse : jean-pierre.dupont@… → « Jean-Pierre Dupont », charles@… → « Charles ». */
+function nomDepuisEmail(email) {
+  return String(email || '').split('@')[0].split(/[._]+/).filter(Boolean)
+    .map((m) => m.split('-').map((x) => x.charAt(0).toUpperCase() + x.slice(1).toLowerCase()).join('-')).join(' ').slice(0, 40);
+}
+/** L'en-tête de l'écran de pointage n'apparaît qu'une fois l'accès complet confirmé (ou pour la connexion). */
+function montrerEcran() { $('header').hidden = false; document.title = 'Pointage & Relances — The Bureau'; }
 
 // ============================================================================ relevé et analyse
 async function chargerReleve() {
@@ -356,7 +366,7 @@ async function afficherAnalyseEnregistree(ops) {
   const [decs, orph, pts] = await Promise.all([
     toutLire(() => sb.from('decisions').select('op_id,refus,motif,annulation_demandee').order('op_id')),
     toutLire(() => sb.from('orphelins').select('*').eq('releve_id', rid).order('orphelin_id')),
-    toutLire(() => sb.from('pointages').select('id,op_id,facture_ref,montant').eq('releve_id', rid).eq('resultat', 'ok').order('id')),
+    toutLire(() => sb.from('pointages').select('id,op_id,facture_ref,montant,resultat,quand').eq('releve_id', rid).in('resultat', ['ok', 'envoi']).order('id')),
   ]);
   const decisions = Object.fromEntries(decs.map((d) => [d.op_id, d]));
   S.lines = ops.map((o) => {
@@ -384,15 +394,28 @@ async function afficherAnalyseEnregistree(ops) {
     id: o.orphelin_id, date: o.date_paiement, montant: Number(o.montant), facture: o.facture, client: o.client, site: o.site,
     saisi: o.saisi_le, detail: o.detail, vu: Boolean(decisions[o.orphelin_id]?.refus),
   })).sort((a, b) => (a.date || '').localeCompare(b.date || ''));
-  // lignes pointées par l'outil depuis : affichées « Pointé » comme dans la session d'origine
+  // lignes pointées par l'outil depuis : affichées « Pointé » comme dans la session d'origine ;
+  // un envoi resté « en cours » (page rafraîchie pendant un pointage) : en cours s'il est récent, sinon interrompu et à relancer
+  // (le serveur vérifie alors dans Archie s'il avait abouti avant de refaire quoi que ce soit)
   S.actions = {};
   for (const p of pts) {
-    const a = (S.actions[p.op_id] ||= { resultat: 'ok', paiements: [] });
-    a.paiements.push({ ref: p.facture_ref, montant: Number(p.montant) });
+    if (p.resultat === 'ok') {
+      const a = (S.actions[p.op_id] ||= { resultat: 'ok', paiements: [] });
+      if (a.paiements) a.paiements.push({ ref: p.facture_ref, montant: Number(p.montant) });
+    } else if (Date.now() - Date.parse(p.quand) < 3 * 60 * 1000) {
+      S.actions[p.op_id] = { resultat: 'envoi' };
+    } else {
+      S.actions[p.op_id] = { resultat: 'erreur', message: "Envoi interrompu (page fermée ou rafraîchie). Cochez la ligne pour réessayer : l'outil vérifie d'abord dans Archie qu'il n'a pas déjà abouti." };
+    }
   }
   try { await chargerAvances(); } catch (e) { S.avances = []; }
   S.avertissements = [...(S.releve.avertissements || [])];
   S.invoices = []; S.relances = null;
+  // dernier calendrier des relances : affiché tout de suite, recalculé à la fin de la relecture d'Archie
+  try {
+    const [ctx, enr] = await Promise.all([D.contexte(sb), D.lireEnregistre(sb)]);
+    if (enr.factures.length) { S.relances = D.calculer(enr.factures, ctx, enr.calcule_le); S.facturesOuvertes = enr.factures; }
+  } catch (e) { console.warn('Relances enregistrées illisibles :', e.message); }
   S.analyse_le = new Date(S.releve.analyse_le);
   S.enregistree = true;
   S.status = 'ready';
@@ -424,17 +447,20 @@ async function analyser({ arrierePlan = false } = {}) {
   const dmin = credits.map((l) => l.date).sort()[0];
   const recul = (n) => new Date(Date.parse(dmin + 'T00:00:00Z') - n * 86400000).toISOString().slice(0, 10);
   let nLots = 0, finis = 0;
+  const debutLecture = Date.now(), attendus = D.memoire.lire('lots_archie', 30); // nombre de lots de la lecture précédente
   const maj = () => {
     if (perime()) return;
-    S.progress = `Lecture d'Archie : ${finis}/${SPACES.length} bâtiments, ${nLots} lots lus…`;
+    S.progress = `Lecture d'Archie : ${finis}/${SPACES.length} bâtiments · ${D.estimation(debutLecture, Math.min(nLots, attendus - 0.5), attendus, 1)}`;
     if (S.status === 'loading') render(); else majEtatArchie();
   };
+  maj();
   const lots = await Promise.all(SPACES.map(async (space) => {
     const r = await lireBatiment(space, recul(120), recul(20), () => { nLots++; maj(); });
     finis++; maj();
     return r;
   })).catch((e) => { echec(e.message); return null; });
   if (!lots || perime()) return;
+  D.memoire.ecrire('lots_archie', nLots);
 
   S.progress = 'Rapprochement…';
   if (arrierePlan) majEtatArchie(); else render();
@@ -477,6 +503,8 @@ async function analyser({ arrierePlan = false } = {}) {
     SEL = new Set([...SEL].filter((id) => pret.has(id)));
     for (const id of Object.keys(OVR)) if (!verif.has(id)) delete OVR[id];
     PICK = new Set([...PICK].filter((id) => verif.has(id)));
+    // envoi resté « en cours » d'une session précédente et toujours pas visible dans Archie : à relancer
+    if (!S.sending) for (const [id, a] of Object.entries(S.actions)) if (a.resultat === 'envoi') S.actions[id] = { resultat: 'erreur', message: "Envoi interrompu. Cochez la ligne pour réessayer : l'outil vérifie d'abord dans Archie qu'il n'a pas déjà abouti." };
     S.archieEnCours = false; S.archieErreur = null;
   }
   S.analyse_le = new Date();
@@ -487,30 +515,22 @@ async function analyser({ arrierePlan = false } = {}) {
   journal('analyse', { resultat: `${R.lines.length} encaissements analysés${arrierePlan ? ' (relecture en arrière-plan)' : ''}` });
 }
 
-/** Mémorise le classement (rapport, Excel) : opérations + paiements Archie sans virement. */
+/** Mémorise le classement (rapport, Excel, réouverture) : opérations + paiements Archie sans virement, en une seule transaction. */
 async function enregistrerAnalyse() {
-  const rid = S.releve.id;
-  const ordre = new Map(S.bank.map((l, k) => [l.id, k]));
-  const rows = S.lines.map((l) => ({
-    releve_id: rid, op_id: l.id, banque: l.banque, ligne: l.ligne, ordre: ordre.get(l.id), date_valeur: l.date,
-    libelle: l.libelle, info: l.info, credit: l.credit, debit: l.debit,
-    categorie: l.tab, regle: l.regle || null, probleme: l.probleme || null, ecart: l.ecart ?? null, detail: l.detail || null,
-    motif: l.motif || null, origine: l.origine || null, propositions: l.props || [],
+  const etat = S;
+  const operations = etat.lines.map((l) => ({
+    op_id: l.id, categorie: l.tab, regle: l.regle || null, probleme: l.probleme || null, ecart: l.ecart ?? null,
+    detail: l.detail || null, motif: l.motif || null, origine: l.origine || null, propositions: l.props || [],
   }));
-  for (let k = 0; k < rows.length; k += 500) {
-    const { error } = await sb.from('operations').upsert(rows.slice(k, k + 500), { onConflict: 'releve_id,op_id' });
+  const orphelins = etat.orphelins.map((o) => ({
+    orphelin_id: o.id, date_paiement: o.date || null, montant: o.montant, facture: o.facture, client: o.client, site: o.site,
+    saisi_le: o.saisi || null, detail: o.detail,
+  }));
+  etat.enregistrement = true;
+  try {
+    const { error } = await sb.rpc('enregistrer_analyse', { releve: etat.releve.id, operations, orphelins });
     if (error) throw new Error(error.message);
-  }
-  let r = await sb.from('orphelins').delete().eq('releve_id', rid);
-  if (r.error) throw new Error(r.error.message);
-  if (S.orphelins.length) {
-    r = await sb.from('orphelins').insert(S.orphelins.map((o) => ({
-      releve_id: rid, orphelin_id: o.id, date_paiement: o.date, montant: o.montant, facture: o.facture, client: o.client, site: o.site, saisi_le: o.saisi || null, detail: o.detail,
-    })));
-    if (r.error) throw new Error(r.error.message);
-  }
-  r = await sb.from('releves').update({ statut: 'ouvert', analyse_le: new Date().toISOString() }).eq('id', rid);
-  if (r.error) throw new Error(r.error.message);
+  } finally { etat.enregistrement = false; }
 }
 
 // ============================================================================ dépôt d'un relevé
@@ -584,7 +604,7 @@ function render() {
   boutons();
   const m = $('#main');
   if (!S) return;
-  if (S.status === 'loading') { m.innerHTML = `<div class="center"><div class="big-spin"></div><h2>Analyse en cours</h2><p>${esc(S.progress || '')}</p><p class="sub">La lecture d'Archie prend environ une minute.</p></div>`; $('#dock').classList.remove('show'); return; }
+  if (S.status === 'loading') { m.innerHTML = `<div class="center"><div class="big-spin"></div><h2>Analyse en cours</h2><p>${esc(S.progress || '')}</p><p class="sub">Lecture seule : vous pouvez rafraîchir la page sans risque, la lecture reprendra.</p></div>`; $('#dock').classList.remove('show'); return; }
   if (S.status === 'empty') { m.innerHTML = `<div class="center"><h2>Aucun relevé à traiter</h2><p>Déposez le relevé bancaire Excel le plus récent.</p><p style="margin-top:22px"><button class="btn primary" onclick="A.choisirFichier()">Déposer un relevé</button></p></div>`; $('#dock').classList.remove('show'); return; }
   if (S.status === 'error') { m.innerHTML = `<div class="center"><h2>L'analyse n'a pas abouti</h2><p>${esc(S.message)}</p><p style="margin-top:22px"><button class="btn primary" onclick="A.recharger()">Réessayer</button></p></div>`; $('#dock').classList.remove('show'); return; }
 
@@ -671,13 +691,33 @@ function validerSel() {
   if (!L.length) return;
   const nbp = L.reduce((x, l) => x + l.props.length, 0);
   confirmBox('Enregistrer dans Archie ?',
-    `<div class="kv"><span>Virements</span><b>${L.length}</b><span>Paiements à créer</span><b>${nbp}</b><span>Montant total</span><b>${eur(L.reduce((x, l) => x + l.credit, 0))}</b><span>Date du paiement</span><b>date de valeur bancaire</b><span>Mode</span><b>Virement bancaire</b><span>Email au client</span><b>Non</b><span>Validé par</span><b>${esc($('#nom').value)}</b></div>
+    `<div class="kv"><span>Virements</span><b>${L.length}</b><span>Paiements à créer</span><b>${nbp}</b><span>Montant total</span><b>${eur(L.reduce((x, l) => x + l.credit, 0))}</b><span>Date du paiement</span><b>date de valeur bancaire</b><span>Mode</span><b>Virement bancaire</b><span>Email au client</span><b>Non</b><span>Validé par</span><b>${esc(NOM)}</b></div>
      <p class="sub">Une fois enregistré, un paiement ne peut être annulé que dans Archie.</p>`,
     'Enregistrer', () => envoyer(L.map((l) => ({ id: l.id, props: l.props.map((p) => ({ uuid: p.uuid, space: p.space, montant: p.montant })) }))));
 }
+// ---- bandeau « écriture en cours » : ne pas fermer ni rafraîchir, avec le temps restant estimé
+let TRAVAIL = null, minuteurTravail = null;
+function travail(t) {
+  TRAVAIL = t;
+  clearInterval(minuteurTravail);
+  if (t) minuteurTravail = setInterval(majTravail, 1000);
+  majTravail();
+}
+function majTravail() {
+  const e = $('#travail');
+  if (!TRAVAIL) { e.hidden = true; return; }
+  const t = TRAVAIL;
+  const avance = t.total ? ` : <b>${t.fait}/${t.total}</b> ${t.unite}` : '';
+  e.innerHTML = `<div class="wrap"><span class="spin"></span><span><b>${esc(t.titre)}</b>${avance} · ${esc(D.estimation(t.debut, t.fait, t.total || 1, t.parPas))}</span>
+    <span>— ne fermez pas et ne rafraîchissez pas cette page.</span></div>`;
+  e.hidden = false;
+}
+
 async function envoyer(items) {
   items.forEach((i) => { S.actions[i.id] = { resultat: 'envoi' }; SEL.delete(i.id); });
   S.sending = true; renderBody(); boutons();
+  const debut = Date.now();
+  travail({ titre: 'Pointage en cours dans Archie', fait: 0, total: items.length, unite: 'lignes', debut, parPas: D.memoire.lire('sec_par_ligne', 1.5) });
   for (let k = 0; k < items.length; k += LOT_ENVOI) {
     const lot = items.slice(k, k + LOT_ENVOI);
     const { data, error } = await sb.functions.invoke('pointer', { body: { releve_id: S.releve.id, items: lot.map((i) => ({ op_id: i.id, props: i.props })) } });
@@ -687,8 +727,11 @@ async function envoyer(items) {
     } else {
       for (const r of data.resultats) S.actions[r.op_id] = r;
     }
+    TRAVAIL.fait = Math.min(items.length, k + lot.length); majTravail();
     renderBody();
   }
+  D.memoire.ecrire('sec_par_ligne', ((Date.now() - debut) / 1000 / items.length).toFixed(2));
+  travail(null);
   S.sending = false;
   const avances = items.filter((i) => S.actions[i.id]?.avance).length;
   if (avances) { try { await chargerAvances(); } catch { /* affichée au prochain chargement */ } }
@@ -775,7 +818,9 @@ function imputerBox(id) {
      <p class="sub">Une fois enregistré, un paiement ne peut être annulé que dans Archie.</p>`,
     'Imputer', async () => {
       S.sending = true; renderBody(); boutons();
+      travail({ titre: 'Imputation en cours dans Archie', fait: 0, total: 0, unite: '', debut: Date.now(), parPas: 5 });
       const { data, error } = await sb.functions.invoke('imputer', { body: { avance_id: a.id, facture_uuid: i.uuid, space: i.space, montant: m } });
+      travail(null);
       S.sending = false;
       if (error) { toast(await erreurFonction(error)); renderBody(); boutons(); return; }
       if (data.resultat !== 'ok') { toast(`Imputation refusée : ${data.message}`); renderBody(); boutons(); return; }
@@ -1003,14 +1048,10 @@ $('#b-reload').addEventListener('click', () => A.relire());
 $('#b-clore').addEventListener('click', clore);
 $('#b-excel').addEventListener('click', () => excelBox());
 $('#b-out').addEventListener('click', async () => { await sb.auth.signOut(); courant = null; vueConnexion(); });
-$('#nom').addEventListener('change', async (e) => {
-  const nom = e.target.value.trim().slice(0, 40);
-  const { error } = await sb.from('profils').update({ nom }).eq('id', USER.id);
-  toast(error ? `Nom non enregistré : ${error.message}` : 'Nom enregistré');
-});
 $('#mbg').addEventListener('click', (e) => { if (e.target.id === 'mbg') closeM(); });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeM(); });
-window.addEventListener('beforeunload', (e) => { if (S?.sending) { e.preventDefault(); e.returnValue = ''; } });
+// écriture en cours (pointage, imputation, enregistrement de l'analyse) : le navigateur demande confirmation avant de quitter
+window.addEventListener('beforeunload', (e) => { if (S?.sending || S?.enregistrement) { e.preventDefault(); e.returnValue = ''; } });
 
 // ============================================================================ démarrage
 (async function demarrer() {

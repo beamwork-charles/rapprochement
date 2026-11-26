@@ -1,9 +1,28 @@
 // Données du calendrier des relances, communes à l'écran principal et à la page de suivi « niveau 5 ».
 // Le calcul lui-même est dans relances.js (même règle partout).
-import * as RL from './relances.js?v=20261126-13';
+import * as RL from './relances.js?v=20261126-14';
 
 export const SPACES = ['16-cours-albert-1er', '25-rue-du-4-septembre', '28-cours-albert-1er', '42-rue-notre-dame-des-victoires'];
 const dateParis = (q) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Paris', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(q));
+
+// ---------------------------------------------------------------------------- estimation du temps restant
+const memo = { lire(k, d) { try { const v = Number(localStorage.getItem(k)); return v > 0 ? v : d; } catch { return d; } },
+  ecrire(k, v) { try { localStorage.setItem(k, String(v)); } catch { /* stockage indisponible */ } } };
+export const memoire = memo;
+export function duree(s) {
+  s = Math.max(0, Math.round(s));
+  return s < 60 ? `${s} s` : `${Math.floor(s / 60)} min ${String(s % 60).padStart(2, '0')} s`;
+}
+/**
+ * Temps restant estimé d'après l'avancement (fait / total) depuis `debut` ; avant le premier pas, d'après `parPas` secondes par pas.
+ * Renvoie « environ 25 s restantes », « quelques secondes »…
+ */
+export function estimation(debut, fait, total, parPas = 1) {
+  const ecoule = (Date.now() - debut) / 1000;
+  let reste = fait > 0 ? (ecoule / fait) * Math.max(0, total - fait) : Math.max(0, total * parPas - ecoule);
+  if (fait >= total) reste = 0;
+  return reste < 4 ? 'quelques secondes' : `environ ${duree(reste)} restantes`;
+}
 
 /** Lit toutes les lignes d'une requête (l'API limite à 1000 lignes par appel). */
 export async function toutLire(fabrique) {
@@ -74,18 +93,25 @@ export async function lireEnregistre(sb) {
   };
 }
 
-/** Relit dans Archie les factures ouvertes des 4 bâtiments (en parallèle). `appel(nom, corps)` appelle une fonction Supabase. */
+/**
+ * Relit dans Archie les factures ouvertes des 4 bâtiments (en parallèle). `appel(nom, corps)` appelle une fonction Supabase.
+ * `progression(texte)` reçoit l'avancement avec une estimation du temps restant (d'après la durée de la lecture précédente).
+ */
 export async function lireOuvertes(appel, progression = () => {}) {
   let lots = 0, finis = 0;
+  const debut = Date.now(), attendus = memo.lire('lots_ouvertes', 8);
+  const maj = () => progression(`Lecture d'Archie : ${finis}/${SPACES.length} bâtiments · ${estimation(debut, Math.min(lots, attendus - 0.5), attendus, 1.2)}`);
+  maj();
   const parBatiment = await Promise.all(SPACES.map(async (space) => {
     const out = []; let curseur = null;
     do {
       const r = await appel('archie-donnees', { space, quoi: 'ouvertes', since: RL.DEBUT_PERIMETRE, curseur });
       out.push(...r.items); curseur = r.curseur;
-      lots++; progression(finis, lots);
+      lots++; maj();
     } while (curseur);
-    finis++; progression(finis, lots);
+    finis++; maj();
     return out;
   }));
+  memo.ecrire('lots_ouvertes', lots);
   return parBatiment.flat();
 }

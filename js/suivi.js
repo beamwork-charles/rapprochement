@@ -1,7 +1,7 @@
 // Page « Suivi niveau 5 » (Oscar, Charles) : séparée de l'écran de pointage, lecture seule.
 // Affiche tout de suite le dernier calendrier enregistré, puis relit les factures ouvertes dans Archie en arrière-plan.
-import * as D from './relances-donnees.js?v=20261126-13';
-import * as RL from './relances.js?v=20261126-13';
+import * as D from './relances-donnees.js?v=20261126-14';
+import * as RL from './relances.js?v=20261126-14';
 
 const C = window.CONFIG || {};
 const $ = (s) => document.querySelector(s);
@@ -80,9 +80,9 @@ async function actualiser() {
   if (!etat || etat.maj) return;
   etat.maj = true; etat.erreurMaj = null; etat.progression = "Lecture d'Archie…"; rendu();
   try {
-    const factures = await D.lireOuvertes(appel, (finis, lots) => {
-      etat.progression = `Lecture d'Archie : ${finis}/${D.SPACES.length} bâtiments, ${lots} lots lus…`;
-      const e = $('#progression'); if (e && ETAT === etat) e.textContent = etat.progression;
+    const factures = await D.lireOuvertes(appel, (texte) => {
+      etat.progression = texte;
+      const e = $('#progression'); if (e && ETAT === etat) e.textContent = texte;
     });
     const R = D.calculer(factures, await D.contexte(sb));
     if (ETAT !== etat) return;

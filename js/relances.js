@@ -2,7 +2,8 @@
 // Règles : BRIEF §8 et PDF §6-7.
 //   Périmètre : factures ouvertes ou partiellement payées, échues depuis le 01/09/2026, reste dû ≥ 5 €.
 //   Niveaux : 1 le jour de l'échéance, 2 à J+7, 3 à J+10, 4 à J+14, 5 trois jours ouvrés après le niveau 4 (opérationnels).
-//   Un niveau n'est envoyé que si le précédent l'a été ; envois à 8 h, jours ouvrés hors fériés français.
+//   On envoie directement le niveau que justifie le retard (pas de rattrapage niveau par niveau) ; un seul suivi par client ;
+//   envois à 8 h, jours ouvrés hors fériés français.
 // Dates : chaînes AAAA-MM-JJ.
 
 export const DEBUT_PERIMETRE = '2026-09-01';
@@ -88,26 +89,31 @@ export function niveauSelonRetard(echeance, aujourdhui) {
 }
 
 /**
- * Prochaine relance d'une facture.
- * @param echeance        date d'échéance
+ * Prochaine relance (règle validée par Charles le 26/11/2026) : on envoie DIRECTEMENT le niveau que justifie le retard,
+ * sans repasser par les niveaux précédents (un client à J+20 sans relance reçoit directement le niveau 4 ou 5).
+ * Seule exception : après un niveau 4 envoyé, le niveau 5 attend les 3 jours ouvrés annoncés dans l'email.
+ * @param echeance        date d'échéance (la plus ancienne du client)
  * @param atteint         dernier niveau envoyé (0 si aucun)
  * @param dateAtteint     date d'envoi du dernier niveau (ou null)
  * @param prochainEnvoi   premier créneau d'envoi possible (jour ouvré, 8 h)
- * Un niveau n'est envoyé que si le précédent l'a été : en rattrapage, l'écart entre deux niveaux est au moins
- * celui du calendrier normal (7, 3, 4 jours ; 3 jours ouvrés avant le niveau 5).
  */
 export function prochaineRelance(echeance, atteint, dateAtteint, prochainEnvoi) {
   if (atteint >= 5) return null;
+  const delai4 = atteint === 4 && dateAtteint ? ajouterOuvres(dateAtteint, 3) : null; // « sans réponse sous 3 jours ouvrés »
+  const niveauAu = (d) => {
+    const n = niveauSelonRetard(echeance, d);
+    return n === 5 && delai4 && d < delai4 ? 4 : n;
+  };
+  // dès le premier créneau si le retard justifie déjà un niveau supérieur au dernier envoyé
+  const maintenant = niveauAu(prochainEnvoi);
+  if (maintenant > atteint) return { niveau: maintenant, date: prochainEnvoi };
+  // sinon : le jour où le retard atteint le niveau suivant
   const n = atteint + 1;
-  let d;
-  if (n === 5) d = ajouterOuvres(dateAtteint || ajouterJours(echeance, DECALAGE[4]), 3);
-  else {
-    d = ajouterJours(echeance, DECALAGE[n]);
-    if (atteint > 0 && dateAtteint) d = [d, ajouterJours(dateAtteint, DECALAGE[n] - DECALAGE[atteint])].sort().pop();
-  }
+  let d = n === 5 ? dateNiveau5(echeance) : ajouterJours(echeance, DECALAGE[n]);
+  if (delai4 && d < delai4) d = delai4;
   d = prochainOuvre(d);
   if (d < prochainEnvoi) d = prochainEnvoi;
-  return { niveau: n, date: d };
+  return { niveau: Math.max(n, niveauAu(d)), date: d };
 }
 
 /** Premier créneau d'envoi : aujourd'hui si jour ouvré et avant 8 h (heure de Paris), sinon le jour ouvré suivant. */

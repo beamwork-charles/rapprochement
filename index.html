@@ -2,7 +2,7 @@
 <html lang="fr">
 <head>
 <meta charset="utf-8">
-<title>Pointage & Relances — The Bureau</title>
+<title>The Bureau</title>
 <link rel="icon" href="data:,">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
@@ -38,6 +38,10 @@ header{border-bottom:1px solid var(--line);position:sticky;top:0;background:#fff
 .file b{color:var(--ink);font-size:15px}
 .file .maj{display:inline-flex;align-items:center;gap:7px;color:var(--blue);background:var(--blue-l);border-radius:999px;padding:2px 11px 2px 6px;align-self:center}
 .file .maj .spin{width:13px;height:13px;border-width:2px;border-color:#BFDBFE;border-top-color:var(--blue)}
+.travail{position:sticky;top:64px;z-index:19;background:#1E3A8A;color:#fff;font-size:13.5px;padding:9px 0}
+.travail .wrap{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.travail .spin{width:15px;height:15px;border-width:2px;border-color:rgba(255,255,255,.35);border-top-color:#fff}
+.travail b{font-variant-numeric:tabular-nums}
 .file .maj.ko{color:var(--red);background:var(--red-l);padding-left:11px}
 .tiles{display:grid;grid-template-columns:repeat(5,1fr);gap:14px;margin:14px 0 8px}
 .tile{border:1px solid var(--line);border-radius:14px;padding:16px 18px;background:#fff;text-align:left;position:relative;transition:box-shadow .15s,border-color .15s}
@@ -135,6 +139,7 @@ td.propcell{max-width:360px;min-width:260px}
   .wrap{padding:0 16px}
   .tiles{grid-template-columns:repeat(2,1fr)}
   header{position:static}
+  .travail{top:0}
   .hbar{height:auto;min-height:64px;flex-wrap:wrap;padding:8px 0}
   .compte{display:none}
   .tablewrap{overflow-x:auto}
@@ -143,10 +148,9 @@ td.propcell{max-width:360px;min-width:260px}
 </style>
 </head>
 <body>
-<header><div class="wrap hbar">
+<header hidden><div class="wrap hbar">
   <div class="brand">Pointage &amp; Relances<small>The Bureau · rapprochement des virements</small></div>
   <div class="spacer"></div>
-  <label class="who" id="b-nom" hidden>Validé par <input id="nom" maxlength="40"></label>
   <button class="btn" id="b-deposer" hidden>Déposer un relevé</button>
   <button class="btn" id="b-reload" hidden>Relancer l'analyse</button>
   <button class="btn" id="b-clore" hidden>Clôturer le relevé</button>
@@ -155,6 +159,7 @@ td.propcell{max-width:360px;min-width:260px}
   <button class="btn" id="b-out" hidden>Se déconnecter</button>
 </div></header>
 
+<div class="travail" id="travail" hidden></div>
 <main class="wrap" id="main"><div class="center"><div class="big-spin"></div></div></main>
 <datalist id="invlist"></datalist>
 <input type="file" id="fichier" accept=".xlsx,.xlsm" hidden>
@@ -173,6 +178,6 @@ td.propcell{max-width:360px;min-width:260px}
 <script src="config.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.118.0/dist/umd/supabase.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script type="module" src="js/app.js?v=20261126-13"></script>
+<script type="module" src="js/app.js?v=20261126-14"></script>
 </body>
 </html>
