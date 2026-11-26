@@ -1,8 +1,8 @@
 // Écran « Pointage » : connexion, dépôt du relevé, analyse (moteur dans le navigateur), validation vers Archie.
 // Portage de src_reference/ui/index.html + server.py sur Supabase.
-import { lireReleve } from './releve.js?v=20261126-7';
-import * as E from './engine.js?v=20261126-7';
-import * as RL from './relances.js?v=20261126-7';
+import { lireReleve } from './releve.js?v=20261126-8';
+import * as E from './engine.js?v=20261126-8';
+import * as RL from './relances.js?v=20261126-8';
 
 const C = window.CONFIG || {};
 const XLSX = window.XLSX;
@@ -175,8 +175,8 @@ function textesView() {
       <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px;align-items:start">
         <div>${statut}
           <input id="mo-${m.code}" class="search" style="width:100%;margin:8px 0" value="${esc(m.objet)}" oninput="A.apercuMaj('${m.code}')">
-          <textarea id="mc-${m.code}" rows="16" style="width:100%;border:1px solid var(--line);border-radius:8px;padding:8px;font:13px/1.45 inherit" oninput="A.apercuMaj('${m.code}')">${esc(m.corps)}</textarea>
-          <div class="acts" style="justify-content:flex-start;margin-top:6px"><button class="btn sm" onclick="A.enregistrerModele('${m.code}')">Enregistrer les modifications</button>
+          <textarea id="mc-${m.code}" rows="16" style="width:100%;border:1px solid var(--line);border-radius:8px;padding:8px;font-family:inherit;font-size:13px;line-height:1.45" oninput="A.apercuMaj('${m.code}')">${esc(m.corps)}</textarea>
+          <div class="acts" style="justify-content:flex-start;flex-wrap:wrap;margin-top:6px"><button class="btn sm" onclick="A.enregistrerModele('${m.code}')">Enregistrer les modifications</button>
           <button class="btn sm primary" onclick="A.validerModele('${m.code}')" ${m.statut === 'valide' ? 'disabled' : ''}>Valider ce texte</button></div></div>
         <div id="ap-${m.code}">${apercu(m)}</div></div>`;
   }
