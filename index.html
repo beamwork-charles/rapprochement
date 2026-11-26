@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>Pointage & Relances — The Bureau</title>
+<link rel="icon" href="data:,">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<style>
+:root{
+  --ink:#111827; --ink2:#374151; --mute:#6B7280; --line:#E5E7EB; --bg:#FFFFFF; --soft:#F9FAFB;
+  --green:#15803D; --green-l:#DCFCE7; --orange:#C2410C; --orange-l:#FFEDD5; --grey:#4B5563; --grey-l:#F3F4F6;
+  --blue:#1D4ED8; --blue-l:#DBEAFE; --red:#B91C1C; --red-l:#FEE2E2; --yellow-l:#FEF9C3;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 "Segoe UI",system-ui,-apple-system,Arial,sans-serif}
+button{font:inherit;cursor:pointer}
+input{font:inherit}
+.wrap{max-width:1400px;margin:0 auto;padding:0 28px}
+header{border-bottom:1px solid var(--line);position:sticky;top:0;background:#fff;z-index:20}
+.hbar{display:flex;align-items:center;gap:16px;height:64px}
+.brand{font-weight:700;font-size:17px;letter-spacing:-.01em}
+.brand small{display:block;font-weight:400;font-size:12px;color:var(--mute)}
+.spacer{flex:1}
+.who{color:var(--mute);font-size:13px}
+.btn{border:1px solid var(--line);background:#fff;border-radius:8px;padding:7px 13px;color:var(--ink2);font-weight:500;white-space:nowrap}
+.btn:hover{background:var(--soft)}
+.btn.primary{background:var(--green);border-color:var(--green);color:#fff}
+.btn.primary:hover{filter:brightness(.95)}
+.btn:disabled{opacity:.45;cursor:default}
+.tiles{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin:22px 0 8px}
+.tile{border:1px solid var(--line);border-radius:14px;padding:16px 18px;background:#fff;text-align:left;position:relative}
+.tile .t{font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase}
+.tile .n{font-size:34px;font-weight:700;line-height:1.1;margin-top:6px;font-variant-numeric:tabular-nums}
+.tile .a{font-size:14px;color:var(--ink2);font-variant-numeric:tabular-nums}
+.tile.on{border-width:2px;padding:15px 17px}
+.tile.pret .t,.tile.pret .n{color:var(--green)} .tile.pret.on{border-color:var(--green)}
+.tile.verif .t,.tile.verif .n{color:var(--orange)} .tile.verif.on{border-color:var(--orange)}
+.tile.cote .t,.tile.cote .n{color:var(--grey)} .tile.cote.on{border-color:var(--grey)}
+.tile.deja .t,.tile.deja .n{color:var(--blue)} .tile.deja.on{border-color:var(--blue)}
+.tile .bar{position:absolute;left:0;right:0;bottom:0;height:4px;border-radius:0 0 13px 13px}
+.tile.pret .bar{background:var(--green)} .tile.verif .bar{background:var(--orange)} .tile.cote .bar{background:#9CA3AF} .tile.deja .bar{background:var(--blue)}
+.ctl{font-size:12px;color:var(--mute);margin:2px 0 14px}
+.ctl b.ok{color:var(--green)} .ctl b.ko{color:var(--red)}
+.center{max-width:460px;margin:90px auto;text-align:center}
+.center h2{margin:12px 0 6px;font-size:22px}
+.center p{color:var(--mute)}
+.form{text-align:left;margin-top:22px;display:grid;gap:10px}
+.form input{border:1px solid var(--line);border-radius:8px;padding:10px 12px;width:100%}
+.err{color:var(--red);font-size:13px;min-height:18px}
+.big-spin{width:44px;height:44px;border:4px solid var(--line);border-top-color:var(--ink);border-radius:50%;animation:sp .9s linear infinite;margin:0 auto}
+@keyframes sp{to{transform:rotate(360deg)}}
+.empty{padding:60px 20px;text-align:center;color:var(--mute);border:1px dashed var(--line);border-radius:14px;margin-top:18px}
+.empty h3{color:var(--ink);margin:0 0 6px;font-size:17px}
+@media (max-width:760px){
+  .wrap{padding:0 16px}
+  .tiles{grid-template-columns:repeat(2,1fr)}
+  .who{display:none}
+}
+</style>
+</head>
+<body>
+<header><div class="wrap hbar">
+  <div class="brand">Pointage &amp; Relances<small>The Bureau</small></div>
+  <div class="spacer"></div>
+  <span class="who" id="who"></span>
+  <button class="btn" id="b-out" hidden>Se déconnecter</button>
+</div></header>
+
+<main class="wrap" id="main"><div class="center"><div class="big-spin"></div></div></main>
+
+<script src="config.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/supabase.min.js"></script>
+<script>
+const C = window.CONFIG || {};
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const estMembre = e => String(e || '').toLowerCase().endsWith('@' + C.DOMAINE);
+let sb = null;
+
+function vue(html){ $('#main').innerHTML = html; }
+
+function vueConfig(){
+  vue(`<div class="center"><h2>Configuration en attente</h2><p>L'outil n'est pas encore relié à sa base.</p></div>`);
+}
+
+function vueConnexion(msg){
+  $('#who').textContent = ''; $('#b-out').hidden = true;
+  vue(`<div class="center"><h2>Connexion</h2><p>Saisissez votre adresse @${esc(C.DOMAINE)} : un lien de connexion vous sera envoyé.</p>
+    <form class="form" id="f-login">
+      <input id="email" type="email" autocomplete="email" placeholder="prenom@${esc(C.DOMAINE)}" required>
+      <button class="btn primary" id="b-login">Recevoir le lien de connexion</button>
+      <div class="err" id="err">${esc(msg || '')}</div>
+    </form></div>`);
+  $('#f-login').addEventListener('submit', async e => {
+    e.preventDefault();
+    const email = $('#email').value.trim().toLowerCase();
+    if (!estMembre(email)) { $('#err').textContent = `Adresse @${C.DOMAINE} uniquement.`; return; }
+    $('#b-login').disabled = true; $('#err').textContent = '';
+    const { error } = await sb.auth.signInWithOtp({ email, options: { emailRedirectTo: location.origin + location.pathname } });
+    if (error) { $('#b-login').disabled = false; $('#err').textContent = error.message; return; }
+    vue(`<div class="center"><h2>Lien envoyé</h2><p>Ouvrez l'email reçu à <b>${esc(email)}</b> et cliquez sur le lien pour vous connecter.</p>
+      <p><button class="btn" onclick="vueConnexion()">Utiliser une autre adresse</button></p></div>`);
+  });
+}
+
+function vueRefus(email){
+  vue(`<div class="center"><h2>Accès réservé</h2><p>Le compte ${esc(email)} n'a pas accès à cet outil.</p></div>`);
+}
+
+function tuile(k, t){ return `<div class="tile ${k}"><div class="t">${t}</div><div class="n">—</div><div class="a">&nbsp;</div><div class="bar"></div></div>`; }
+
+async function vueOutil(user){
+  $('#who').textContent = user.email; $('#b-out').hidden = false;
+  vue(`<div class="tiles">${tuile('pret','Prêt à pointer')}${tuile('verif','À vérifier')}${tuile('cote','Mis de côté')}${tuile('deja','Déjà pointé')}</div>
+    <div class="ctl" id="sante">Archie : vérification…</div>
+    <div class="empty"><h3>Aucun relevé à traiter</h3><p><button class="btn" disabled title="Disponible à l'étape suivante">Déposer un relevé</button></p></div>`);
+  sb.from('profils').upsert({ id: user.id, email: user.email }, { onConflict: 'id', ignoreDuplicates: true }).then(() => {});
+  try {
+    const { data, error } = await sb.functions.invoke('archie-sante');
+    if (error) throw error;
+    const b = data.batiments || [];
+    $('#sante').innerHTML = data.ok
+      ? `Archie : <b class="ok">connecté ✓</b> · ${b.length} bâtiments`
+      : `Archie : <b class="ko">${esc(data.message || b.filter(x => !x.virement).map(x => x.site + ' ' + (x.erreur || 'sans compte « Virement bancaire »')).join(' ; ') || 'indisponible')}</b>`;
+  } catch (e) {
+    $('#sante').innerHTML = `Archie : <b class="ko">fonction indisponible</b>`;
+  }
+}
+
+let courant = undefined; // id de l'utilisateur affiché, pour ne pas redessiner à chaque rafraîchissement de jeton
+async function afficher(session){
+  const user = session && session.user;
+  if ((user ? user.id : null) === courant) return;
+  courant = user ? user.id : null;
+  if (!user) return vueConnexion();
+  if (!estMembre(user.email)) { await sb.auth.signOut(); return vueConnexion(`Adresse @${C.DOMAINE} uniquement.`); }
+  return vueOutil(user);
+}
+
+$('#b-out').addEventListener('click', async () => { await sb.auth.signOut(); courant = null; vueConnexion(); });
+
+(async function demarrer(){
+  if (!C.SUPABASE_URL || !C.SUPABASE_ANON_KEY || !window.supabase) return vueConfig();
+  sb = window.supabase.createClient(C.SUPABASE_URL, C.SUPABASE_ANON_KEY, { auth: { persistSession: true, detectSessionInUrl: true } });
+  const { data } = await sb.auth.getSession();
+  await afficher(data.session);
+  sb.auth.onAuthStateChange((evt, session) => { if (evt === 'SIGNED_IN' || evt === 'SIGNED_OUT') afficher(session); });
+})();
+</script>
+</body>
+</html>

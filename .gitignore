@@ -1,0 +1,12 @@
+# Dépôt public : uniquement l'écran. Aucun relevé, aucune donnée, aucune clé.
+*.xlsx
+*.xlsm
+*.xls
+*.csv
+*.pdf
+*.json
+.env
+.env.*
+*.key
+*.pem
+data/
