@@ -1,8 +1,8 @@
 // Écran « Pointage » : connexion, dépôt du relevé, analyse (moteur dans le navigateur), validation vers Archie.
 // Portage de src_reference/ui/index.html + server.py sur Supabase.
-import { lireReleve } from './releve.js?v=20261126-8';
-import * as E from './engine.js?v=20261126-8';
-import * as RL from './relances.js?v=20261126-8';
+import { lireReleve } from './releve.js?v=20261126-9';
+import * as E from './engine.js?v=20261126-9';
+import * as RL from './relances.js?v=20261126-9';
 
 const C = window.CONFIG || {};
 const XLSX = window.XLSX;
@@ -31,7 +31,7 @@ function boutons() {
   $('#b-out').hidden = !co; $('#b-nom').hidden = !co; $('#b-deposer').hidden = !co; $('#b-excel').hidden = !co;
   $('#b-reload').hidden = !co || !S?.releve; $('#b-clore').hidden = !co || !S?.releve;
   const occupe = !S || S.status === 'loading' || S.sending;
-  $('#b-deposer').disabled = occupe; $('#b-reload').disabled = occupe || !pret; $('#b-clore').disabled = occupe || !pret;
+  $('#b-deposer').disabled = occupe; $('#b-reload').disabled = occupe || !pret || S.archieEnCours; $('#b-clore').disabled = occupe || !pret || S.archieEnCours;
   $('#who').textContent = USER ? USER.email : '';
 }
 const journal = (action, champs = {}) => sb.from('journal').insert({ action, releve_id: S?.releve?.id ?? null, ...champs }).then(({ error }) => { if (error) console.warn('Journal :', error.message); });
@@ -208,6 +208,7 @@ function validerModele(code) {
 function relancesView() {
   if (S.vueRelances === 'textes') return textesView();
   const R = S.relances;
+  if (!R && S.archieEnCours) return `<div class="empty">Calendrier en cours de calcul : lecture d'Archie en arrière-plan…</div>`;
   if (!R) return `<div class="empty">Relances non calculées. <button class="btn sm" onclick="A.actualiserRelances()">Actualiser</button></div>`;
   const actifs = R.clients.filter((c) => !c.exclu);
   const tot = (L) => L.reduce((s, c) => s + c.total, 0);
@@ -362,47 +363,128 @@ async function chargerReleve() {
     if (error) throw new Error(error.message);
     if (!rel.length) { S.status = 'empty'; return render(); }
     S.releve = rel[0];
-    const ops = await toutLire(() => sb.from('operations').select('op_id,banque,ligne,ordre,date_valeur,libelle,info,credit,debit').eq('releve_id', S.releve.id).order('ordre'));
+    const ops = await toutLire(() => sb.from('operations').select('*').eq('releve_id', S.releve.id).order('ordre'));
     S.bank = ops.map((o) => ({
       id: o.op_id, banque: o.banque, ligne: o.ligne, date: o.date_valeur, libelle: o.libelle || '', info: o.info || '',
       texte: ((o.libelle || '') + ' ' + (o.info || '')).trim(), credit: Number(o.credit), debit: Number(o.debit),
     }));
-    await analyser();
+    // Analyse déjà enregistrée : affichage immédiat, puis relecture d'Archie en arrière-plan.
+    if (S.releve.analyse_le && ops.length && ops.every((o) => o.categorie)) {
+      await afficherAnalyseEnregistree(ops);
+      analyser({ arrierePlan: true });
+    } else await analyser();
   } catch (e) {
     S.status = 'error'; S.message = e.message; render();
   }
 }
 
-async function analyser() {
-  S.status = 'loading'; S.progress = "Lecture d'Archie…"; S.actions = {}; SEL = new Set(); OVR = {}; PICK = new Set();
-  render();
+/** Reconstruit l'écran à partir du dernier classement enregistré (sans lire Archie). */
+async function afficherAnalyseEnregistree(ops) {
+  const rid = S.releve.id;
+  const [decs, orph, pts] = await Promise.all([
+    toutLire(() => sb.from('decisions').select('op_id,refus,motif,annulation_demandee').order('op_id')),
+    toutLire(() => sb.from('orphelins').select('*').eq('releve_id', rid).order('orphelin_id')),
+    toutLire(() => sb.from('pointages').select('id,op_id,facture_ref,montant').eq('releve_id', rid).eq('resultat', 'ok').order('id')),
+  ]);
+  const decisions = Object.fromEntries(decs.map((d) => [d.op_id, d]));
+  S.lines = ops.map((o) => {
+    const l = {
+      id: o.op_id, banque: o.banque, ligne: o.ligne, date: o.date_valeur, libelle: o.libelle || '', info: o.info || '',
+      texte: ((o.libelle || '') + ' ' + (o.info || '')).trim(), credit: Number(o.credit), debit: Number(o.debit),
+      tab: o.categorie, props: o.propositions || [], detail: o.detail || '',
+    };
+    if (o.regle) l.regle = o.regle;
+    if (o.probleme) l.probleme = o.probleme;
+    if (o.ecart != null) l.ecart = Number(o.ecart);
+    if (o.motif) l.motif = o.motif;
+    if (o.origine) l.origine = o.origine;
+    // les refus et remises à traiter décidés depuis l'enregistrement priment
+    const d = decisions[l.id], avant = l.probleme ? 'verif' : 'pret';
+    if (l.tab === 'cote' && (l.motif || '').startsWith('Refusé')) {
+      if (d?.refus) { l.refuse = true; l.tab_origine = avant; } else { l.tab = avant; delete l.motif; }
+    } else if (d?.refus && (l.tab === 'pret' || l.tab === 'verif')) {
+      l.tab_origine = l.tab; l.tab = 'cote'; l.refuse = true; l.motif = 'Refusé' + (d.motif ? ` : ${d.motif}` : '');
+    }
+    if (d?.annulation_demandee && l.tab === 'deja') l.annulation = true;
+    return l;
+  });
+  S.orphelins = orph.map((o) => ({
+    id: o.orphelin_id, date: o.date_paiement, montant: Number(o.montant), facture: o.facture, client: o.client, site: o.site,
+    saisi: o.saisi_le, detail: o.detail, vu: Boolean(decisions[o.orphelin_id]?.refus),
+  })).sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+  // lignes pointées par l'outil depuis : affichées « Pointé » comme dans la session d'origine
+  S.actions = {};
+  for (const p of pts) {
+    const a = (S.actions[p.op_id] ||= { resultat: 'ok', paiements: [] });
+    a.paiements.push({ ref: p.facture_ref, montant: Number(p.montant) });
+  }
+  try { await chargerAvances(); } catch (e) { S.avances = []; }
+  S.avertissements = [...(S.releve.avertissements || [])];
+  S.invoices = []; S.relances = null;
+  S.analyse_le = new Date(S.releve.analyse_le);
+  S.enregistree = true;
+  S.status = 'ready';
+  render(); remplirFactures();
+}
+
+/** Indicateur de relecture d'Archie (sans redessiner l'écran). */
+function majEtatArchie() {
+  const e = $('#etat-archie');
+  if (e) e.textContent = S.progress || '';
+}
+
+async function analyser({ arrierePlan = false } = {}) {
+  const etat = S; // un rechargement ou un dépôt remplace S : le résultat de cette lecture est alors abandonné
+  const perime = () => S !== etat;
+  if (arrierePlan) {
+    S.archieEnCours = true; S.archieErreur = null; S.progress = "Lecture d'Archie…"; render();
+  } else {
+    S.status = 'loading'; S.progress = "Lecture d'Archie…"; S.actions = {}; SEL = new Set(); OVR = {}; PICK = new Set();
+    render();
+  }
+  const echec = (message) => {
+    if (perime()) return;
+    if (arrierePlan) { S.archieEnCours = false; S.archieErreur = message; render(); }
+    else { S.status = 'error'; S.message = message; render(); }
+  };
   const credits = S.bank.filter((l) => l.credit > 0);
-  if (!credits.length) { S.status = 'error'; S.message = 'Aucun encaissement dans ce relevé.'; return render(); }
+  if (!credits.length) return echec('Aucun encaissement dans ce relevé.');
   const dmin = credits.map((l) => l.date).sort()[0];
   const recul = (n) => new Date(Date.parse(dmin + 'T00:00:00Z') - n * 86400000).toISOString().slice(0, 10);
   let nLots = 0, finis = 0;
-  const maj = () => { S.progress = `Lecture d'Archie : ${finis}/${SPACES.length} bâtiments, ${nLots} lots lus…`; if (S.status === 'loading') render(); };
+  const maj = () => {
+    if (perime()) return;
+    S.progress = `Lecture d'Archie : ${finis}/${SPACES.length} bâtiments, ${nLots} lots lus…`;
+    if (S.status === 'loading') render(); else majEtatArchie();
+  };
   const lots = await Promise.all(SPACES.map(async (space) => {
     const r = await lireBatiment(space, recul(120), recul(20), () => { nLots++; maj(); });
     finis++; maj();
     return r;
-  })).catch((e) => { S.status = 'error'; S.message = e.message; render(); return null; });
-  if (!lots) return;
+  })).catch((e) => { echec(e.message); return null; });
+  if (!lots || perime()) return;
 
-  S.progress = 'Rapprochement…'; render();
+  S.progress = 'Rapprochement…';
+  if (arrierePlan) majEtatArchie(); else render();
   await new Promise((r) => setTimeout(r, 30));
+  if (perime()) return;
   const inv = lots.flatMap((l) => l.inv), pay = lots.flatMap((l) => l.pay);
   const avert = [...(S.releve.avertissements || [])];
   for (const l of lots) if (!l.compte_virement) avert.push(`${l.site} : compte « Virement bancaire » introuvable dans Archie, les pointages y échoueront.`);
   for (const l of lots) if (!l.compte_trop_percu) avert.push(`${l.site} : compte « Trop-Perçu » introuvable dans Archie, les avances ne pourront pas y être imputées.`);
-  try { await chargerAvances(); } catch (e) { S.avances = []; avert.push(`Avances non chargées : ${e.message}`); }
-  try { await calculerRelances(inv.filter((i) => ['open', 'partially_paid', 'processing_payment'].includes(i.state))); } catch (e) { avert.push(`Relances non calculées : ${e.message}`); }
-
-  const decs = await toutLire(() => sb.from('decisions').select('op_id,refus,motif,annulation_demandee').order('op_id'));
-  const decisions = Object.fromEntries(decs.map((d) => [d.op_id, d]));
-  const t0 = performance.now();
-  const R = E.run(S.bank, inv, pay, decisions);
-  console.info(`Moteur : ${Math.round(performance.now() - t0)} ms, ${inv.length} factures, ${pay.length} paiements`);
+  let R, decisions;
+  try {
+    try { await chargerAvances(); } catch (e) { S.avances = []; avert.push(`Avances non chargées : ${e.message}`); }
+    if (perime()) return;
+    try { await calculerRelances(inv.filter((i) => ['open', 'partially_paid', 'processing_payment'].includes(i.state))); } catch (e) { avert.push(`Relances non calculées : ${e.message}`); }
+    if (perime()) return;
+    const decs = await toutLire(() => sb.from('decisions').select('op_id,refus,motif,annulation_demandee').order('op_id'));
+    if (perime()) return;
+    decisions = Object.fromEntries(decs.map((d) => [d.op_id, d]));
+    const t0 = performance.now();
+    R = E.run(S.bank, inv, pay, decisions);
+    console.info(`Moteur : ${Math.round(performance.now() - t0)} ms, ${inv.length} factures, ${pay.length} paiements`);
+  } catch (e) { return echec(e.message); }
 
   // annulations demandées : effectives si la ligne n'est plus « déjà pointée »
   for (const l of R.lines) {
@@ -416,11 +498,21 @@ async function analyser() {
   S.invoices = R.invoices.filter((i) => i.reste > 0.005 && ['open', 'partially_paid'].includes(i.state))
     .map((i) => ({ uuid: i.uuid, space: i.space, ref: i.ref, client: i.client, site: i.site, reste: i.reste, date: i.date, group_uuid: i.group_uuid }))
     .sort((a, b) => (a.ref || '').localeCompare(b.ref || ''));
+  if (arrierePlan) {
+    // les pointages faits pendant la relecture restent affichés ; la sélection ne garde que les lignes encore à pointer
+    const pret = new Set(inTab('pret').filter((l) => !isOk(l)).map((l) => l.id));
+    const verif = new Set(inTab('verif').map((l) => l.id));
+    SEL = new Set([...SEL].filter((id) => pret.has(id)));
+    for (const id of Object.keys(OVR)) if (!verif.has(id)) delete OVR[id];
+    PICK = new Set([...PICK].filter((id) => verif.has(id)));
+    S.archieEnCours = false; S.archieErreur = null;
+  }
   S.analyse_le = new Date();
+  S.enregistree = false;
   S.status = 'ready';
   render(); remplirFactures();
-  enregistrerAnalyse().catch((e) => { S.avertissements.push(`Analyse non enregistrée : ${e.message}`); render(); });
-  journal('analyse', { resultat: `${R.lines.length} encaissements analysés` });
+  enregistrerAnalyse().catch((e) => { if (!perime()) { S.avertissements.push(`Analyse non enregistrée : ${e.message}`); render(); } });
+  journal('analyse', { resultat: `${R.lines.length} encaissements analysés${arrierePlan ? ' (relecture en arrière-plan)' : ''}` });
 }
 
 /** Mémorise le classement (rapport, Excel) : opérations + paiements Archie sans virement. */
@@ -459,8 +551,21 @@ async function deposer(fichier) {
     const dates = credits.map((l) => l.date).sort();
     const total = credits.reduce((a, l) => a + l.credit, 0);
     const comptes = [...new Set(lignes.map((l) => l.banque))];
+    // comparaison avec le relevé en cours : mêmes opérations = mêmes identifiants (refus, « vu » et pointages conservés)
+    const enCours = S?.releve ? S : null;
+    const connus = new Set((enCours?.bank || []).map((l) => l.id));
+    const dejaConnues = credits.filter((l) => connus.has(l.id)).length, nouvelles = credits.length - dejaConnues;
+    const fin = dates[dates.length - 1];
+    let alerte = '';
+    if (enCours && dejaConnues === credits.length && credits.length === connus.size) {
+      alerte = `<div class="warn">Ce fichier contient exactement les mêmes encaissements que le relevé en cours (« ${esc(enCours.releve.fichier)} »). Le déposer ne change rien : pour relire Archie, utilisez plutôt « Recharger ».</div>`;
+    } else if (enCours?.releve.date_max && fin < enCours.releve.date_max) {
+      alerte = `<div class="warn">Ce fichier s'arrête le <b>${dfr(fin)}</b>, avant le relevé en cours (« ${esc(enCours.releve.fichier)} », jusqu'au ${dfr(enCours.releve.date_max)}). Il deviendrait pourtant le relevé à traiter : les encaissements reçus après le ${dfr(fin)} n'apparaîtraient plus tant qu'un relevé plus récent n'est pas déposé.</div>`;
+    }
     confirmBox('Déposer ce relevé ?',
-      `<div class="kv"><span>Fichier</span><b>${esc(fichier.name)}</b><span>Comptes</span><b>${esc(comptes.join(', '))}</b><span>Encaissements</span><b>${credits.length}</b><span>Total</span><b>${eur(total)}</b><span>Période</span><b>du ${dfr(dates[0])} au ${dfr(dates[dates.length - 1])}</b></div>
+      `<div class="kv"><span>Fichier</span><b>${esc(fichier.name)}</b><span>Comptes</span><b>${esc(comptes.join(', '))}</b><span>Encaissements</span><b>${credits.length}</b><span>Total</span><b>${eur(total)}</b><span>Période</span><b>du ${dfr(dates[0])} au ${dfr(fin)}</b>
+       ${enCours ? `<span>Déjà dans le relevé en cours</span><b>${dejaConnues} (reconnues : refus, « vu » et pointages conservés)</b><span>Nouvelles</span><b>${nouvelles}</b>` : ''}</div>
+       ${alerte}
        ${avertissements.map((w) => `<div class="warn">${esc(w)}</div>`).join('')}
        <p class="sub">Le relevé déposé devient le relevé à traiter. Rien n'est envoyé à Archie à cette étape.</p>`,
       'Déposer', async () => {
@@ -519,7 +624,11 @@ function render() {
   const orphTodo = S.orphelins.filter((o) => !o.vu);
   const totTabs = Object.values(sums).reduce((x, s) => x + s.a, 0);
   const okCtl = Math.abs(tot - totTabs) < 0.01;
-  let h = `<div class="file"><b>${esc(S.releve.fichier)}</b><span>déposé le ${dfr(S.releve.depose_le.slice(0, 10))}</span><span>· analysé le ${S.analyse_le.toLocaleDateString('fr-FR')} à ${S.analyse_le.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}</span></div>`;
+  const quand = `${S.analyse_le.toLocaleDateString('fr-FR')} à ${S.analyse_le.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}`;
+  const etatArchie = S.archieEnCours
+    ? `<span class="maj"><span class="spin"></span> Mise à jour depuis Archie — <span id="etat-archie">${esc(S.progress || '')}</span></span>`
+    : S.archieErreur ? `<span class="maj ko">Archie non relu : ${esc(S.archieErreur)} <button class="link" onclick="A.relire()">Réessayer</button></span>` : '';
+  let h = `<div class="file"><b>${esc(S.releve.fichier)}</b><span>déposé le ${dfr(S.releve.depose_le.slice(0, 10))}</span><span>· ${S.enregistree ? 'dernière analyse enregistrée le' : 'analysé le'} ${quand}</span>${etatArchie}</div>`;
   (S.avertissements || []).forEach((w) => (h += `<div class="warn">${esc(w)}</div>`));
   h += `<div class="tiles">
     ${tile('pret', 'Prêt à pointer', pretTodo.length, pretTodo.reduce((x, l) => x + l.credit, 0), pretDone.length ? `${pretDone.length} pointée(s) dans cette session` : 'Facture identifiée, montant exact')}
@@ -669,7 +778,7 @@ function avancesView() {
     const choix = F.length
       ? `<select id="imp-f-${a.id}" class="search" style="width:260px" onchange="A.impMontant('${a.id}')">${F.map((i) => `<option value="${i.uuid}">${esc(i.ref)} · ${esc(i.site)} · reste ${eur(i.reste)}</option>`).join('')}</select>
          <input id="imp-m-${a.id}" class="search" style="width:110px;text-align:right" value="${String(Math.min(a.restant, F[0].reste).toFixed(2)).replace('.', ',')}">`
-      : `<span class="sub">${a.group_uuid ? 'Aucune facture ouverte pour ce client pour l\'instant' : 'Client Archie non identifié : à imputer à la main'}</span>`;
+      : `<span class="sub">${!a.group_uuid ? 'Client Archie non identifié : à imputer à la main' : S.archieEnCours ? 'Factures en cours de lecture dans Archie…' : 'Aucune facture ouverte pour ce client pour l\'instant'}</span>`;
     h += `<tr><td><div class="strong">${esc(a.client)}</div><div class="sub">${esc(a.factures_soldees || '')}</div></td>
       <td class="date">${dfr(a.date_virement)}<div class="sub">${esc(a.par_email || '')}</div></td>
       <td class="num strong">${eur(a.restant)}${a.montant_impute > 0 ? `<div class="sub">sur ${eur(a.montant)}</div>` : ''}</td>
@@ -731,7 +840,7 @@ function proposition(l) {
   }
   const v = o && o.label ? o.label : '';
   const mt = o && o.montant != null ? o.montant : '';
-  return `<div class="pick"><input class="f" list="invlist" placeholder="N° de facture ou client…" value="${esc(v)}" onchange="A.choisir('${l.id}',this.value)">
+  return `<div class="pick"><input class="f" list="invlist" placeholder="${S.archieEnCours ? 'Lecture d\'Archie en cours…' : 'N° de facture ou client…'}" value="${esc(v)}" onchange="A.choisir('${l.id}',this.value)">
     <input class="m" placeholder="Montant" value="${mt === '' ? '' : String(mt).replace('.', ',')}" onchange="A.montant('${l.id}',this.value)"></div>
     ${(l.props || []).length ? `<button class="link" onclick="A.pick('${l.id}',false)">Revenir à la proposition</button>` : ''}`;
 }
@@ -895,6 +1004,7 @@ window.A = {
   connexion: () => vueConnexion(),
   choisirFichier: () => $('#fichier').click(),
   recharger: () => chargerReleve(),
+  relire: () => { if (S?.status === 'ready' && !S.archieEnCours) analyser({ arrierePlan: true }); },
   onglet: (k) => { TAB = k; SEL = new Set(); render(); },
   tog: (id, on) => { on ? SEL.add(id) : SEL.delete(id); dock(); },
   togAll: (on) => { inTab('pret').filter(match).filter((l) => !isOk(l) && !isBusy(l)).forEach((l) => (on ? SEL.add(l.id) : SEL.delete(l.id))); renderBody(); },
@@ -917,7 +1027,7 @@ $('#d-refuser').addEventListener('click', () => { const ids = [...SEL]; refuserB
 $('#d-valider').addEventListener('click', validerSel);
 $('#b-deposer').addEventListener('click', () => $('#fichier').click());
 $('#fichier').addEventListener('change', (e) => deposer(e.target.files[0]));
-$('#b-reload').addEventListener('click', () => analyser());
+$('#b-reload').addEventListener('click', () => A.relire());
 $('#b-clore').addEventListener('click', clore);
 $('#b-excel').addEventListener('click', () => excelBox());
 $('#b-out').addEventListener('click', async () => { await sb.auth.signOut(); courant = null; vueConnexion(); });
