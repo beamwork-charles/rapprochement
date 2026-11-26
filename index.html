@@ -115,7 +115,8 @@ async function vueOutil(user){
   vue(`<div class="tiles">${tuile('pret','Prêt à pointer')}${tuile('verif','À vérifier')}${tuile('cote','Mis de côté')}${tuile('deja','Déjà pointé')}</div>
     <div class="ctl" id="sante">Archie : vérification…</div>
     <div class="empty"><h3>Aucun relevé à traiter</h3><p><button class="btn" disabled title="Disponible à l'étape suivante">Déposer un relevé</button></p></div>`);
-  sb.from('profils').upsert({ id: user.id, email: user.email }, { onConflict: 'id', ignoreDuplicates: true }).then(() => {});
+  sb.from('profils').upsert({ id: user.id, email: user.email }, { onConflict: 'id', ignoreDuplicates: true })
+    .then(({ error }) => { if (error) console.warn('Profil non enregistré :', error.message); });
   try {
     const { data, error } = await sb.functions.invoke('archie-sante');
     if (error) throw error;
