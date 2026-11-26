@@ -1,7 +1,7 @@
 // Page « Suivi niveau 5 » (Oscar, Charles) : séparée de l'écran de pointage, lecture seule.
 // Affiche tout de suite le dernier calendrier enregistré, puis relit les factures ouvertes dans Archie en arrière-plan.
-import * as D from './relances-donnees.js?v=20261126-11';
-import * as RL from './relances.js?v=20261126-11';
+import * as D from './relances-donnees.js?v=20261126-12';
+import * as RL from './relances.js?v=20261126-12';
 
 const C = window.CONFIG || {};
 const $ = (s) => document.querySelector(s);
@@ -140,14 +140,14 @@ function ligne(c, R) {
   const emails = [c.manager_email, ...c.contacts].filter(Boolean);
   const facs = c.factures.map((f) => `<li>${esc(f.ref)} · ${esc(f.site)} · échéance ${dfr(f.echeance)} · ${eur(f.reste)}</li>`).join('');
   return `<tr>
-    <td data-l="Retard"><span class="compteur ${classe}"><span class="v">${c.retard_max}</span> j</span>
+    <td data-l="Retard" class="c-retard"><span class="compteur ${classe}"><span class="v">${c.retard_max}</span> j</span>
       <div class="sub" style="margin-top:4px">niveau 5 depuis ${depuis} j${c.date_niveau5 ? ` (${dcourt(c.date_niveau5)})` : ''}</div></td>
-    <td data-l="Client"><div class="client">${esc(c.client)}${c.particulier ? '<span class="tag">particulier</span>' : ''}</div>
+    <td data-l="Client" class="c-client"><div class="client">${esc(c.client)}${c.particulier ? '<span class="tag">particulier</span>' : ''}</div>
       <details><summary>${c.factures.length} facture${c.factures.length > 1 ? 's' : ''} · ${esc(c.sites.join(' + '))}</summary><ul>${facs}</ul></details></td>
-    <td data-l="Relances" class="num relances"><div class="v">${c.relances.length}</div><div class="sub">${derniere ? `dernière le ${dfr(derniere)}` : 'aucune'}</div></td>
-    <td data-l="Contact" class="contact">${c.manager ? `<div>${esc(c.manager)}</div>` : ''}
+    <td data-l="Relances" class="num relances c-rel"><div class="v">${c.relances.length}</div><div class="sub">${derniere ? `dernière le ${dfr(derniere)}` : 'aucune'}</div></td>
+    <td data-l="Contact" class="contact c-contact">${c.manager ? `<div>${esc(c.manager)}</div>` : ''}
       ${emails.map((e) => `<div><a href="mailto:${esc(e)}">${esc(e)}</a></div>`).join('') || '<span class="sub">aucun email dans Archie</span>'}</td>
-    <td data-l="Montant dû" class="num"><div class="montant">${eur(c.total)}</div></td>
+    <td data-l="Montant dû" class="num c-montant"><div class="montant">${eur(c.total)}</div></td>
   </tr>`;
 }
 
