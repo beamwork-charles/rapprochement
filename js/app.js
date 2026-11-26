@@ -35,7 +35,39 @@ function boutons() {
 const journal = (action, champs = {}) => sb.from('journal').insert({ action, releve_id: S?.releve?.id ?? null, ...champs }).then(({ error }) => { if (error) console.warn('Journal :', error.message); });
 
 async function erreurFonction(error) {
-  try { const j = await error.context.json(); return j.error || error.message; } catch { return error.message; }
+  try {
+    const j = await error.context.json();
+    return j.error || (j.message ? `${j.message}${j.code ? ' (' + j.code + ')' : ''}` : error.message);
+  } catch { return error.message; }
+}
+
+/** Appel d'une fonction, avec deux nouvelles tentatives si l'instance manque de ressources (code 546) ou ne répond pas. */
+async function appelFonction(nom, body) {
+  for (let essai = 0; ; essai++) {
+    const { data, error } = await sb.functions.invoke(nom, { body });
+    if (!error) return data;
+    const statut = error.context?.status;
+    if (essai < 2 && (!statut || statut === 546 || statut >= 502)) { await new Promise((r) => setTimeout(r, 1500 * (essai + 1))); continue; }
+    throw new Error(await erreurFonction(error));
+  }
+}
+
+/** Lecture d'un bâtiment par lots (même contenu et même ordre que archie.Client.fetch). */
+async function lireBatiment(space, sinceInv, sincePay, unLot) {
+  const { compte_virement } = await appelFonction('archie-donnees', { space, quoi: 'compte' });
+  const inv = [], pay = [];
+  let site = space;
+  for (const [quoi, since, dest] of [['ouvertes', sinceInv, inv], ['payees', sinceInv, inv], ['paiements', sincePay, pay]]) {
+    let curseur = null;
+    do {
+      const r = await appelFonction('archie-donnees', { space, quoi, since, curseur });
+      dest.push(...r.items);
+      if (r.items[0]) site = r.items[0].site;
+      curseur = r.curseur;
+      unLot();
+    } while (curseur);
+  }
+  return { space, site, compte_virement, inv, pay };
 }
 
 /** Lit toutes les lignes d'une requête (l'API limite à 1000 lignes par appel). */
@@ -114,12 +146,12 @@ async function analyser() {
   if (!credits.length) { S.status = 'error'; S.message = 'Aucun encaissement dans ce relevé.'; return render(); }
   const dmin = credits.map((l) => l.date).sort()[0];
   const recul = (n) => new Date(Date.parse(dmin + 'T00:00:00Z') - n * 86400000).toISOString().slice(0, 10);
-  let finis = 0;
+  let nLots = 0, finis = 0;
+  const maj = () => { S.progress = `Lecture d'Archie : ${finis}/${SPACES.length} bâtiments, ${nLots} lots lus…`; if (S.status === 'loading') render(); };
   const lots = await Promise.all(SPACES.map(async (space) => {
-    const { data, error } = await sb.functions.invoke('archie-donnees', { body: { space, since_inv: recul(120), since_pay: recul(20) } });
-    finis++; S.progress = `Lecture d'Archie : ${finis}/${SPACES.length} bâtiments…`; render();
-    if (error) throw new Error(await erreurFonction(error));
-    return data;
+    const r = await lireBatiment(space, recul(120), recul(20), () => { nLots++; maj(); });
+    finis++; maj();
+    return r;
   })).catch((e) => { S.status = 'error'; S.message = e.message; render(); return null; });
   if (!lots) return;
 
