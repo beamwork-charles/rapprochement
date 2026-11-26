@@ -175,9 +175,10 @@ export function calendrier(factures, envoyees, exclus, maintenant = new Date()) 
     c.date_niveau5 = c.niveau_atteint >= 5 ? c.date_atteint : dateNiveau5(c.echeance_ref);
     c.sites = [...new Set(c.factures.map((f) => f.site).filter(Boolean))];
     // suivi : contact et relances déjà faites (outil + Archie, en jours distincts)
+    const lisible = (e) => e && !e.includes('*'); // Archie masque l'email du responsable (« a******@… ») : inutilisable
     c.manager = c.factures.map((f) => f.manager).find(Boolean) || '';
-    c.manager_email = c.factures.map((f) => f.manager_email).find(Boolean) || '';
-    c.contacts = [...new Set(c.factures.flatMap((f) => f.contacts || []))].filter((e) => e !== c.manager_email);
+    c.manager_email = c.factures.map((f) => f.manager_email).find(lisible) || '';
+    c.contacts = [...new Set(c.factures.flatMap((f) => f.contacts || []))].filter((e) => lisible(e) && e !== c.manager_email);
     const uuids = new Set(c.factures.map((f) => f.uuid));
     const jours = new Set(c.factures.flatMap((f) => f.rappels_archie || []));
     for (const r of envoyees) if ((r.factures || []).some((u) => uuids.has(u))) jours.add(r.date);

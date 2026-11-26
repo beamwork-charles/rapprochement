@@ -1,9 +1,9 @@
 // Écran « Pointage » : connexion, dépôt du relevé, analyse (moteur dans le navigateur), validation vers Archie.
 // Portage de src_reference/ui/index.html + server.py sur Supabase.
-import { lireReleve } from './releve.js?v=20261126-10';
-import * as E from './engine.js?v=20261126-10';
-import * as RL from './relances.js?v=20261126-10';
-import * as D from './relances-donnees.js?v=20261126-10';
+import { lireReleve } from './releve.js?v=20261126-11';
+import * as E from './engine.js?v=20261126-11';
+import * as RL from './relances.js?v=20261126-11';
+import * as D from './relances-donnees.js?v=20261126-11';
 
 const C = window.CONFIG || {};
 const XLSX = window.XLSX;
