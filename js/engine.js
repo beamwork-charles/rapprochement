@@ -209,7 +209,8 @@ export function run(bank, inv, pay, decisions) {
   const clients = lines.filter((l) => l.cat === 'Client');
 
   // ---- paiements Archie utilisables
-  const ex = pay.filter((p) => p.status === 'succeeded' && !['credit-note', 'invoice'].includes(p.compte));
+  // (ajout étape 4 : les imputations d'avance [AVANCE:…] ne correspondent à aucun virement du relevé)
+  const ex = pay.filter((p) => p.status === 'succeeded' && !['credit-note', 'invoice'].includes(p.compte) && !(p.note || '').includes('[AVANCE:'));
   for (const p of ex) { p.used = false; p.d = parisDate(p.date); const m = TAG_RE.exec(p.note || ''); p.tag = m ? m[1] : null; }
 
   // ---- 0. lignes déjà pointées par l'outil (repère dans la note du paiement)

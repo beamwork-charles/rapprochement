@@ -20,7 +20,8 @@ let sb = null, USER = null, courant;
 let S = null; // état de l'écran
 let TAB = 'pret', SEL = new Set(), Q = '', HIDE = false, FILT = { verif: '', cote: '' }, OVR = {}, PICK = new Set();
 const TABS = { pret: 'Prêt à pointer', verif: 'À vérifier', cote: 'Mis de côté', deja: 'Déjà pointé' };
-const PB = { 'Facture à confirmer': 'confirmer', 'Montant insuffisant': 'partiel', 'Trop payé': 'trop', 'Doublon possible': 'doublon', 'Montant différent': 'different', 'Payeur inconnu': 'inconnu', 'Saisi dans Archie sans virement': 'archie' };
+const PB = { 'Facture à confirmer': 'confirmer', 'Montant insuffisant': 'partiel', 'Trop payé': 'trop', 'Doublon possible': 'doublon', 'Montant différent': 'different', 'Payeur inconnu': 'inconnu', 'Saisi dans Archie sans virement': 'archie', 'Avance à imputer': 'trop' };
+const SECTIONS = ['Saisi dans Archie sans virement', 'Avance à imputer']; // filtres qui ne concernent pas les lignes du relevé
 
 function toast(t) { const e = $('#toast'); e.textContent = t; e.classList.add('show'); clearTimeout(e._t); e._t = setTimeout(() => e.classList.remove('show'), 3600); }
 function vue(html) { $('#main').innerHTML = html; }
@@ -54,7 +55,7 @@ async function appelFonction(nom, body) {
 
 /** Lecture d'un bâtiment par lots (même contenu et même ordre que archie.Client.fetch). */
 async function lireBatiment(space, sinceInv, sincePay, unLot) {
-  const { compte_virement } = await appelFonction('archie-donnees', { space, quoi: 'compte' });
+  const { compte_virement, compte_trop_percu } = await appelFonction('archie-donnees', { space, quoi: 'compte' });
   const inv = [], pay = [];
   let site = space;
   for (const [quoi, since, dest] of [['ouvertes', sinceInv, inv], ['payees', sinceInv, inv], ['paiements', sincePay, pay]]) {
@@ -67,7 +68,29 @@ async function lireBatiment(space, sinceInv, sincePay, unLot) {
       unLot();
     } while (curseur);
   }
-  return { space, site, compte_virement, inv, pay };
+  return { space, site, compte_virement, compte_trop_percu, inv, pay };
+}
+
+// ============================================================================ écarts et avances
+const SEUIL_ECART = 5;
+const societe = (space) => (space === '42-rue-notre-dame-des-victoires' ? '42' : 'the-bureau');
+async function chargerAvances() {
+  const { data, error } = await sb.from('avances').select('*').eq('statut', 'ouverte').order('cree_le');
+  if (error) throw new Error(error.message);
+  S.avances = data.map((a) => ({ ...a, restant: Math.round((Number(a.montant) - Number(a.montant_impute)) * 100) / 100 }));
+}
+/** Factures ouvertes du même client, imputables (même société), les plus anciennes d'abord. */
+function facturesPour(a) {
+  return (S.invoices || []).filter((i) => a.group_uuid && i.group_uuid === a.group_uuid && societe(i.space) === societe(a.space) && i.reste > 0.005)
+    .sort((x, y) => (x.date || '').localeCompare(y.date || ''));
+}
+/** Explication de l'écart entre le virement et le montant pointé (affichée avant validation). */
+function texteEcart(credit, tot) {
+  const d = Math.round((credit - tot) * 100) / 100;
+  if (d < -0.005) return `<div class="warn">Le montant pointé dépasse le virement de ${eur(-d)} : l'envoi sera refusé.</div>`;
+  if (d >= SEUIL_ECART) return `<p class="sub">Trop-perçu de <b>${eur(d)}</b> : enregistré comme avance du client (note sur le paiement et sur sa fiche Archie), proposé sur sa prochaine facture. Un email d'information est préparé, il n'est pas envoyé.</p>`;
+  if (d >= 0.01) return `<p class="sub">Écart de ${eur(d)} (moins de ${SEUIL_ECART} €) : aucun message au client, régularisation par la comptabilité.</p>`;
+  return '';
 }
 
 /** Lit toutes les lignes d'une requête (l'API limite à 1000 lignes par appel). */
@@ -160,6 +183,8 @@ async function analyser() {
   const inv = lots.flatMap((l) => l.inv), pay = lots.flatMap((l) => l.pay);
   const avert = [...(S.releve.avertissements || [])];
   for (const l of lots) if (!l.compte_virement) avert.push(`${l.site} : compte « Virement bancaire » introuvable dans Archie, les pointages y échoueront.`);
+  for (const l of lots) if (!l.compte_trop_percu) avert.push(`${l.site} : compte « Trop-Perçu » introuvable dans Archie, les avances ne pourront pas y être imputées.`);
+  try { await chargerAvances(); } catch (e) { S.avances = []; avert.push(`Avances non chargées : ${e.message}`); }
 
   const decs = await toutLire(() => sb.from('decisions').select('op_id,refus,motif,annulation_demandee').order('op_id'));
   const decisions = Object.fromEntries(decs.map((d) => [d.op_id, d]));
@@ -177,7 +202,7 @@ async function analyser() {
   }
   S.lines = R.lines; S.orphelins = R.orphelins; S.avertissements = avert;
   S.invoices = R.invoices.filter((i) => i.reste > 0.005 && ['open', 'partially_paid'].includes(i.state))
-    .map((i) => ({ uuid: i.uuid, space: i.space, ref: i.ref, client: i.client, site: i.site, reste: i.reste }))
+    .map((i) => ({ uuid: i.uuid, space: i.space, ref: i.ref, client: i.client, site: i.site, reste: i.reste, date: i.date, group_uuid: i.group_uuid }))
     .sort((a, b) => (a.ref || '').localeCompare(b.ref || ''));
   S.analyse_le = new Date();
   S.status = 'ready';
@@ -286,7 +311,7 @@ function render() {
   (S.avertissements || []).forEach((w) => (h += `<div class="warn">${esc(w)}</div>`));
   h += `<div class="tiles">
     ${tile('pret', 'Prêt à pointer', pretTodo.length, pretTodo.reduce((x, l) => x + l.credit, 0), pretDone.length ? `${pretDone.length} pointée(s) dans cette session` : 'Facture identifiée, montant exact')}
-    ${tile('verif', 'À vérifier', verifTodo.length + orphTodo.length, verifTodo.reduce((x, l) => x + l.credit, 0), 'Une décision est nécessaire')}
+    ${tile('verif', 'À vérifier', verifTodo.length + orphTodo.length + (S.avances || []).length, verifTodo.reduce((x, l) => x + l.credit, 0), 'Une décision est nécessaire')}
     ${tile('cote', 'Mis de côté', sums.cote.n, sums.cote.a, 'Carte, titres-resto, interne, refusés')}
     ${tile('deja', 'Déjà pointé', sums.deja.n, sums.deja.a, 'Pointé avant cette passe')}
   </div>
@@ -369,9 +394,12 @@ async function envoyer(items) {
     }
     renderBody();
   }
-  S.sending = false; renderBody(); boutons();
+  S.sending = false;
+  const avances = items.filter((i) => S.actions[i.id]?.avance).length;
+  if (avances) { try { await chargerAvances(); } catch { /* affichée au prochain chargement */ } }
+  render(); boutons();
   const ko = items.filter((i) => S.actions[i.id]?.resultat !== 'ok').length;
-  toast(ko ? `Envoi terminé : ${ko} ligne(s) en échec` : 'Envoi terminé');
+  toast((ko ? `Envoi terminé : ${ko} ligne(s) en échec` : 'Envoi terminé') + (avances ? ` · ${avances} avance(s) client enregistrée(s)` : ''));
 }
 
 /* ---- À vérifier */
@@ -381,14 +409,20 @@ function verifView() {
   const order = Object.keys(PB);
   L.sort((a, b) => order.indexOf(a.probleme) - order.indexOf(b.probleme) || a.date.localeCompare(b.date));
   let h = '';
-  if (FILT.verif !== 'Saisi dans Archie sans virement') {
+  const petitEcart = (l) => {
+    if (!(Math.abs(l.ecart || 0) > 0.005 && Math.abs(l.ecart) < SEUIL_ECART)) return '';
+    if (l.probleme === 'Montant insuffisant') return ` · écart < ${SEUIL_ECART} € : pas de relance, régularisation comptable`;
+    if (l.probleme === 'Trop payé') return ` · écart < ${SEUIL_ECART} € : pas d'avance ni de message au client`;
+    return '';
+  };
+  if (!SECTIONS.includes(FILT.verif)) {
     h += `<table><thead><tr><th>Problème</th><th>Date</th><th class="num">Reçu</th><th>Virement et explication</th><th>Proposition</th><th class="num" style="width:180px">Décision</th></tr></thead><tbody>`;
     if (!L.length) h += `<tr><td colspan="6" class="empty">Aucune ligne.</td></tr>`;
     for (const l of L) {
       const k = PB[l.probleme] || 'inconnu';
       h += `<tr class="${isOk(l) ? 'ok' : isErr(l) ? 'err' : ''}"><td><span class="badge b-${k}">${esc(l.probleme)}</span></td>
         <td class="date">${dfr(l.date)}</td><td class="num strong">${eur(l.credit)}</td>
-        <td><div class="lib" title="${esc(l.texte)}">${esc(l.texte)}</div><div class="expl">${esc(l.detail)}</div><div class="sub">${esc(l.banque)}</div>${isErr(l) ? `<div class="errmsg">${esc(act(l).message)}</div>` : ''}</td>
+        <td><div class="lib" title="${esc(l.texte)}">${esc(l.texte)}</div><div class="expl">${esc(l.detail)}${esc(petitEcart(l))}</div><div class="sub">${esc(l.banque)}</div>${isErr(l) ? `<div class="errmsg">${esc(act(l).message)}</div>` : ''}${isOk(l) && act(l).avance ? `<div class="expl">Avance de ${eur(act(l).avance.montant)} enregistrée${act(l).avertissement ? ' — ' + esc(act(l).avertissement) : ''}</div>` : ''}</td>
         <td class="propcell">${proposition(l)}</td>
         <td class="num">${isOk(l) ? `<span class="done"><i></i>Pointé</span>` : isBusy(l) ? '<span class="spin"></span>' : `<div class="acts"><button class="btn sm danger" onclick="A.refuserBox(['${l.id}'],'cette ligne')" ${S.sending ? 'disabled' : ''}>Refuser</button><button class="btn sm primary" onclick="A.validerUne('${l.id}')" ${propsFor(l).length && !S.sending ? '' : 'disabled'}>Valider</button></div>`}</td></tr>`;
     }
@@ -406,7 +440,68 @@ function verifView() {
     }
     h += `</tbody></table>`;
   }
+  if (!FILT.verif || FILT.verif === 'Avance à imputer') h += avancesView();
   return h;
+}
+
+/* ---- Avances clients (trop-perçus) */
+function avancesView() {
+  const AV = (S.avances || []).filter((a) => !Q || (a.client + ' ' + a.factures_soldees + ' ' + a.restant).toLowerCase().includes(Q.toLowerCase()));
+  let h = `<div class="section">Avances clients à imputer<small>trop-perçus enregistrés, à déduire d'une facture ouverte du même client</small></div>
+    <table><thead><tr><th>Client</th><th>Virement</th><th class="num">Avance restante</th><th>Imputer sur</th><th class="num">Décision</th></tr></thead><tbody>`;
+  if (!AV.length) h += `<tr><td colspan="5" class="empty">Aucune.</td></tr>`;
+  for (const a of AV) {
+    const F = facturesPour(a);
+    const choix = F.length
+      ? `<select id="imp-f-${a.id}" class="search" style="width:260px" onchange="A.impMontant('${a.id}')">${F.map((i) => `<option value="${i.uuid}">${esc(i.ref)} · ${esc(i.site)} · reste ${eur(i.reste)}</option>`).join('')}</select>
+         <input id="imp-m-${a.id}" class="search" style="width:110px;text-align:right" value="${String(Math.min(a.restant, F[0].reste).toFixed(2)).replace('.', ',')}">`
+      : `<span class="sub">${a.group_uuid ? 'Aucune facture ouverte pour ce client pour l\'instant' : 'Client Archie non identifié : à imputer à la main'}</span>`;
+    h += `<tr><td><div class="strong">${esc(a.client)}</div><div class="sub">${esc(a.factures_soldees || '')}</div></td>
+      <td class="date">${dfr(a.date_virement)}<div class="sub">${esc(a.par_email || '')}</div></td>
+      <td class="num strong">${eur(a.restant)}${a.montant_impute > 0 ? `<div class="sub">sur ${eur(a.montant)}</div>` : ''}</td>
+      <td>${choix}</td>
+      <td class="num"><div class="acts"><button class="btn sm" onclick="A.emailBox('${a.id}')">Email préparé</button><button class="btn sm primary" onclick="A.imputerBox('${a.id}')" ${F.length && !S.sending ? '' : 'disabled'}>Imputer</button></div></td></tr>`;
+  }
+  return h + `</tbody></table>`;
+}
+function impMontant(id) {
+  const a = S.avances.find((x) => x.id === id);
+  const i = S.invoices.find((x) => x.uuid === $(`#imp-f-${id}`).value);
+  if (a && i) $(`#imp-m-${id}`).value = String(Math.min(a.restant, i.reste).toFixed(2)).replace('.', ',');
+}
+function imputerBox(id) {
+  const a = S.avances.find((x) => x.id === id);
+  const i = S.invoices.find((x) => x.uuid === $(`#imp-f-${id}`)?.value);
+  const m = Math.round(parseFloat(String($(`#imp-m-${id}`)?.value || '').replace(/\s/g, '').replace(',', '.')) * 100) / 100;
+  if (!a || !i) return;
+  if (!(m > 0) || m > a.restant + 0.005 || m > i.reste + 0.005) { toast(`Montant invalide (au plus ${eur(Math.min(a.restant, i.reste))})`); return; }
+  confirmBox('Imputer cette avance ?',
+    `<div class="kv"><span>Client</span><b>${esc(a.client)}</b><span>Avance</span><b>${eur(a.restant)} (virement du ${dfr(a.date_virement)})</b><span>Facture</span><b>${esc(i.ref)} · ${esc(i.site)}</b><span>Montant imputé</span><b>${eur(m)}</b><span>Mode</span><b>Trop-Perçu</b><span>Date du paiement</span><b>aujourd'hui</b><span>Email au client</span><b>Non</b></div>
+     <p class="sub">Une fois enregistré, un paiement ne peut être annulé que dans Archie.</p>`,
+    'Imputer', async () => {
+      S.sending = true; renderBody(); boutons();
+      const { data, error } = await sb.functions.invoke('imputer', { body: { avance_id: a.id, facture_uuid: i.uuid, space: i.space, montant: m } });
+      S.sending = false;
+      if (error) { toast(await erreurFonction(error)); renderBody(); boutons(); return; }
+      if (data.resultat !== 'ok') { toast(`Imputation refusée : ${data.message}`); renderBody(); boutons(); return; }
+      i.reste = Math.round((i.reste - m) * 100) / 100;
+      await chargerAvances();
+      render(); remplirFactures();
+      toast(`Avance imputée sur ${data.facture_ref} : ${eur(data.montant)}`);
+    });
+}
+function emailBox(id) {
+  const a = S.avances.find((x) => x.id === id);
+  const e = a?.email_prepare || {};
+  $('#modal').innerHTML = `<h3>Email d'information préparé</h3>
+    <div class="kv"><span>Destinataires</span><b>${esc((e.destinataires || []).join(', ') || 'à compléter')}</b><span>Objet</span><b>${esc(e.objet || '')}</b></div>
+    <textarea id="email-texte" rows="12">${esc(e.texte || '')}</textarea>
+    <p class="sub">Brouillon à relire : il n'est pas envoyé par l'outil.</p>
+    <div class="row"><button class="btn" onclick="A.fermer()">Fermer</button><button class="btn primary" id="mok">Copier le texte</button></div>`;
+  $('#mok').onclick = async () => {
+    try { await navigator.clipboard.writeText(`Objet : ${e.objet || ''}\n\n${$('#email-texte').value}`); toast('Texte copié'); } catch { toast('Copie impossible : sélectionnez le texte à la main'); }
+  };
+  $('#mbg').classList.add('show');
 }
 function propsFor(l) {
   const o = OVR[l.id];
@@ -447,7 +542,7 @@ function validerUne(id) {
   const tot = P.reduce((x, p) => x + p.montant, 0);
   confirmBox('Pointer ce virement ?',
     `<div class="kv"><span>Virement</span><b>${eur(l.credit)} du ${dfr(l.date)}</b>${P.map((p) => `<span>${esc(p.ref)}</span><b>${eur(p.montant)} · ${esc(p.client || '')}</b>`).join('')}<span>Total pointé</span><b>${eur(tot)}</b><span>Email au client</span><b>Non</b></div>
-     ${Math.abs(tot - l.credit) > 0.05 ? `<p class="sub">Écart de ${eur(l.credit - tot)} entre le virement et le montant pointé : il restera visible dans le rapport.</p>` : ''}`,
+     ${texteEcart(l.credit, tot)}`,
     'Enregistrer', () => envoyer([{ id, props: P.map((p) => ({ uuid: p.uuid, space: p.space, montant: p.montant })) }]));
 }
 
@@ -486,7 +581,12 @@ function dejaView() {
 function chips() {
   const c = $('#chips'); if (!c) return;
   let opts = [], key = null;
-  if (TAB === 'verif') { key = 'verif'; opts = Object.keys(PB).map((p) => [p, p === 'Saisi dans Archie sans virement' ? S.orphelins.filter((o) => !o.vu).length : inTab('verif').filter((l) => l.probleme === p && !isOk(l)).length]).filter((x) => x[1] > 0); }
+  if (TAB === 'verif') {
+    key = 'verif';
+    const n = (p) => (p === 'Saisi dans Archie sans virement' ? S.orphelins.filter((o) => !o.vu).length
+      : p === 'Avance à imputer' ? (S.avances || []).length : inTab('verif').filter((l) => l.probleme === p && !isOk(l)).length);
+    opts = Object.keys(PB).map((p) => [p, n(p)]).filter((x) => x[1] > 0);
+  }
   if (TAB === 'cote') { key = 'cote'; const m = {}; inTab('cote').forEach((l) => { const k = l.refuse ? 'Refusé' : l.motif; m[k] = (m[k] || 0) + 1; }); opts = Object.entries(m); }
   if (!key) { c.innerHTML = ''; return; }
   c.innerHTML = `<button class="chip ${!FILT[key] ? 'on' : ''}" onclick="A.filtre('${key}','')">Tout</button> ` +
@@ -586,7 +686,7 @@ window.A = {
   togAll: (on) => { inTab('pret').filter(match).filter((l) => !isOk(l) && !isBusy(l)).forEach((l) => (on ? SEL.add(l.id) : SEL.delete(l.id))); renderBody(); },
   filtre: (k, v) => { FILT[k] = v; renderBody(); },
   pick: (id, on) => { if (on) PICK.add(id); else { PICK.delete(id); delete OVR[id]; } renderBody(); },
-  choisir, montant, validerUne, refuserBox, annulerBox,
+  choisir, montant, validerUne, refuserBox, annulerBox, impMontant, imputerBox, emailBox,
   vu: (id) => refuser([id], ''),
   remettre,
   fermer: closeM,
