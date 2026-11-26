@@ -118,9 +118,14 @@ export function premierCreneau(maintenant = new Date()) {
   return { aujourdhui: auj, creneau: estOuvre(auj) && +p.hour < 8 ? auj : prochainOuvre(ajouterJours(auj, 1)) };
 }
 
+/** Date à laquelle une échéance atteint le niveau 5 (3 jours ouvrés après le niveau 4). */
+export const dateNiveau5 = (echeance) => ajouterOuvres(ajouterJours(echeance, DECALAGE[4]), 3);
+
 /**
- * Calendrier par client.
- * @param factures   factures Archie (ref, uuid, space, site, client, group_uuid, state, reste, echeance, type)
+ * Calendrier par client — UN seul suivi par client, tous bâtiments confondus (même group_uuid Archie) :
+ * le niveau suit la facture en retard la plus ancienne et chaque email regroupe toutes ses factures en retard.
+ * @param factures   factures Archie (ref, uuid, space, site, client, group_uuid, state, reste, echeance, type,
+ *                   et pour le suivi : manager, manager_email, contacts, rappels_archie)
  * @param envoyees   relances déjà faites : [{ group_uuid, niveau, date, factures: [uuid] }]
  * @param exclus     { group_uuid: { motif } } (liste « ne pas relancer »)
  */
@@ -140,7 +145,7 @@ export function calendrier(factures, envoyees, exclus, maintenant = new Date()) 
     const h = histo.get(f.uuid) || { niveau: 0, date: null };
     lignes.push({
       ...f, retard: ecartJours(aujourdhui, f.echeance), niveau_atteint: h.niveau, date_atteint: h.date,
-      niveau_retard: niveauSelonRetard(f.echeance, aujourdhui), prochaine: prochaineRelance(f.echeance, h.niveau, h.date, creneau),
+      niveau_retard: niveauSelonRetard(f.echeance, aujourdhui),
     });
   }
   const parClient = new Map();
@@ -152,13 +157,31 @@ export function calendrier(factures, envoyees, exclus, maintenant = new Date()) 
     if (l.type === 'user') c.particulier = true;
   }
   const clients = [...parClient.values()].map((c) => {
-    c.factures.sort((a, b) => a.echeance.localeCompare(b.echeance));
+    c.factures.sort((a, b) => a.echeance.localeCompare(b.echeance) || (a.ref || '').localeCompare(b.ref || ''));
     c.total = Math.round(c.factures.reduce((s, f) => s + f.reste, 0) * 100) / 100;
-    c.retard_max = Math.max(...c.factures.map((f) => f.retard));
-    c.niveau_atteint = Math.max(...c.factures.map((f) => f.niveau_atteint));
-    const proch = c.factures.map((f) => f.prochaine).filter(Boolean);
-    c.prochaine_date = proch.length ? proch.map((p) => p.date).sort()[0] : null;
-    c.prochain_niveau = proch.length ? Math.max(...proch.filter((p) => p.date === c.prochaine_date).map((p) => p.niveau)) : null;
+    c.echeance_ref = c.factures[0].echeance; // la facture la plus ancienne mène le calendrier du client
+    c.retard_max = c.factures[0].retard;
+    // dernier niveau envoyé au client (pour l'une de ses factures encore en retard) et sa date
+    c.niveau_atteint = 0; c.date_atteint = null;
+    for (const f of c.factures) {
+      if (f.niveau_atteint > c.niveau_atteint) { c.niveau_atteint = f.niveau_atteint; c.date_atteint = f.date_atteint; }
+      else if (f.niveau_atteint && f.niveau_atteint === c.niveau_atteint && f.date_atteint > (c.date_atteint || '')) c.date_atteint = f.date_atteint;
+    }
+    c.niveau_retard = niveauSelonRetard(c.echeance_ref, aujourdhui);
+    const p = prochaineRelance(c.echeance_ref, c.niveau_atteint, c.date_atteint, creneau);
+    c.prochaine_date = p ? p.date : null;
+    c.prochain_niveau = p ? p.niveau : null;
+    for (const f of c.factures) f.prochaine = p; // un seul email pour toutes les factures du client
+    c.date_niveau5 = c.niveau_atteint >= 5 ? c.date_atteint : dateNiveau5(c.echeance_ref);
+    c.sites = [...new Set(c.factures.map((f) => f.site).filter(Boolean))];
+    // suivi : contact et relances déjà faites (outil + Archie, en jours distincts)
+    c.manager = c.factures.map((f) => f.manager).find(Boolean) || '';
+    c.manager_email = c.factures.map((f) => f.manager_email).find(Boolean) || '';
+    c.contacts = [...new Set(c.factures.flatMap((f) => f.contacts || []))].filter((e) => e !== c.manager_email);
+    const uuids = new Set(c.factures.map((f) => f.uuid));
+    const jours = new Set(c.factures.flatMap((f) => f.rappels_archie || []));
+    for (const r of envoyees) if ((r.factures || []).some((u) => uuids.has(u))) jours.add(r.date);
+    c.relances = [...jours].sort();
     c.exclu = c.group_uuid ? exclus[c.group_uuid] || null : null;
     return c;
   }).sort((a, b) => b.retard_max - a.retard_max || b.total - a.total);

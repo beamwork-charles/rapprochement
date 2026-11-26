@@ -1,8 +1,9 @@
 // Écran « Pointage » : connexion, dépôt du relevé, analyse (moteur dans le navigateur), validation vers Archie.
 // Portage de src_reference/ui/index.html + server.py sur Supabase.
-import { lireReleve } from './releve.js?v=20261126-9';
-import * as E from './engine.js?v=20261126-9';
-import * as RL from './relances.js?v=20261126-9';
+import { lireReleve } from './releve.js?v=20261126-10';
+import * as E from './engine.js?v=20261126-10';
+import * as RL from './relances.js?v=20261126-10';
+import * as D from './relances-donnees.js?v=20261126-10';
 
 const C = window.CONFIG || {};
 const XLSX = window.XLSX;
@@ -87,49 +88,17 @@ function facturesPour(a) {
 }
 // ============================================================================ relances (lecture seule)
 async function calculerRelances(factures) {
-  const [env, npr, rel, par] = await Promise.all([
-    toutLire(() => sb.from('relances').select('group_uuid,niveau,quand,factures').eq('statut', 'envoye').order('id')),
-    toutLire(() => sb.from('ne_pas_relancer').select('group_uuid,client,motif,par_email,quand').order('group_uuid')),
-    sb.from('releves').select('analyse_le').not('analyse_le', 'is', null).order('analyse_le', { ascending: false }).limit(1),
-    sb.from('parametres').select('cle,valeur'),
-  ]);
-  const envoyees = env.map((r) => ({ group_uuid: r.group_uuid, niveau: r.niveau, date: E.parisDate(r.quand), factures: (r.factures || []).map((f) => f.uuid || f) }));
-  const exclus = Object.fromEntries(npr.map((n) => [n.group_uuid, n]));
-  const R = RL.calendrier(factures, envoyees, exclus);
-  R.dernierReleve = rel.data?.[0]?.analyse_le ? E.parisDate(rel.data[0].analyse_le) : null;
-  R.suspendues = !R.dernierReleve || RL.ouvresEntre(R.dernierReleve, R.aujourdhui) > 2;
-  R.actives = (par.data || []).find((p) => p.cle === 'relances_actives')?.valeur === true;
-  R.calcule_le = new Date();
+  const R = D.calculer(factures, await D.contexte(sb));
   S.relances = R;
   S.facturesOuvertes = factures;
-  enregistrerRelances().catch((e) => console.warn('Relances non enregistrées :', e.message));
-}
-/** Mémorise le calendrier pour l'export Excel (remplace le précédent). */
-async function enregistrerRelances() {
-  const R = S.relances;
-  const rows = R.clients.flatMap((c) => c.factures.map((f) => ({
-    group_uuid: c.group_uuid, client: c.client, particulier: c.particulier, exclu: Boolean(c.exclu), motif_exclusion: c.exclu?.motif || null,
-    facture_uuid: f.uuid, facture_ref: f.ref, space: f.space, site: f.site, echeance: f.echeance, reste: f.reste, retard: f.retard,
-    niveau_atteint: f.niveau_atteint, niveau_selon_retard: f.niveau_retard,
-    prochain_niveau: c.exclu ? null : f.prochaine?.niveau ?? null, prochaine_date: c.exclu ? null : f.prochaine?.date ?? null,
-  })));
-  let r = await sb.from('relances_suivi').delete().gte('id', 0);
-  if (r.error) throw new Error(r.error.message);
-  for (let k = 0; k < rows.length; k += 500) {
-    r = await sb.from('relances_suivi').insert(rows.slice(k, k + 500));
-    if (r.error) throw new Error(r.error.message);
-  }
+  // mémorisé pour l'export Excel et la page de suivi (remplace le précédent)
+  D.enregistrer(sb, R).catch((e) => console.warn('Relances non enregistrées :', e.message));
 }
 /** Relit seulement les factures ouvertes dans Archie (plus rapide qu'une analyse complète). */
 async function actualiserRelances() {
   S.relancesEnCours = true; renderBody();
   try {
-    const lots = await Promise.all(SPACES.map(async (space) => {
-      const out = []; let curseur = null;
-      do { const r = await appelFonction('archie-donnees', { space, quoi: 'ouvertes', since: RL.DEBUT_PERIMETRE, curseur }); out.push(...r.items); curseur = r.curseur; } while (curseur);
-      return out;
-    }));
-    await calculerRelances(lots.flat());
+    await calculerRelances(await D.lireOuvertes(appelFonction));
     toast('Relances actualisées');
   } catch (e) { toast(`Actualisation impossible : ${e.message}`); }
   S.relancesEnCours = false; render();
