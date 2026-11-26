@@ -2,6 +2,7 @@
 // Portage de src_reference/ui/index.html + server.py sur Supabase.
 import { lireReleve } from './releve.js';
 import * as E from './engine.js';
+import * as RL from './relances.js';
 
 const C = window.CONFIG || {};
 const XLSX = window.XLSX;
@@ -27,7 +28,7 @@ function toast(t) { const e = $('#toast'); e.textContent = t; e.classList.add('s
 function vue(html) { $('#main').innerHTML = html; }
 function boutons() {
   const co = Boolean(USER), pret = S && S.status === 'ready';
-  $('#b-out').hidden = !co; $('#b-nom').hidden = !co; $('#b-deposer').hidden = !co;
+  $('#b-out').hidden = !co; $('#b-nom').hidden = !co; $('#b-deposer').hidden = !co; $('#b-excel').hidden = !co;
   $('#b-reload').hidden = !co || !S?.releve; $('#b-clore').hidden = !co || !S?.releve;
   const occupe = !S || S.status === 'loading' || S.sending;
   $('#b-deposer').disabled = occupe; $('#b-reload').disabled = occupe || !pret; $('#b-clore').disabled = occupe || !pret;
@@ -84,6 +85,144 @@ function facturesPour(a) {
   return (S.invoices || []).filter((i) => a.group_uuid && i.group_uuid === a.group_uuid && societe(i.space) === societe(a.space) && i.reste > 0.005)
     .sort((x, y) => (x.date || '').localeCompare(y.date || ''));
 }
+// ============================================================================ relances (lecture seule)
+async function calculerRelances(factures) {
+  const [env, npr, rel, par] = await Promise.all([
+    toutLire(() => sb.from('relances').select('group_uuid,niveau,quand,factures').eq('statut', 'envoye').order('id')),
+    toutLire(() => sb.from('ne_pas_relancer').select('group_uuid,client,motif,par_email,quand').order('group_uuid')),
+    sb.from('releves').select('analyse_le').not('analyse_le', 'is', null).order('analyse_le', { ascending: false }).limit(1),
+    sb.from('parametres').select('cle,valeur'),
+  ]);
+  const envoyees = env.map((r) => ({ group_uuid: r.group_uuid, niveau: r.niveau, date: E.parisDate(r.quand), factures: (r.factures || []).map((f) => f.uuid || f) }));
+  const exclus = Object.fromEntries(npr.map((n) => [n.group_uuid, n]));
+  const R = RL.calendrier(factures, envoyees, exclus);
+  R.dernierReleve = rel.data?.[0]?.analyse_le ? E.parisDate(rel.data[0].analyse_le) : null;
+  R.suspendues = !R.dernierReleve || RL.ouvresEntre(R.dernierReleve, R.aujourdhui) > 2;
+  R.actives = (par.data || []).find((p) => p.cle === 'relances_actives')?.valeur === true;
+  R.calcule_le = new Date();
+  S.relances = R;
+  S.facturesOuvertes = factures;
+  enregistrerRelances().catch((e) => console.warn('Relances non enregistrées :', e.message));
+}
+/** Mémorise le calendrier pour l'export Excel (remplace le précédent). */
+async function enregistrerRelances() {
+  const R = S.relances;
+  const rows = R.clients.flatMap((c) => c.factures.map((f) => ({
+    group_uuid: c.group_uuid, client: c.client, particulier: c.particulier, exclu: Boolean(c.exclu), motif_exclusion: c.exclu?.motif || null,
+    facture_uuid: f.uuid, facture_ref: f.ref, space: f.space, site: f.site, echeance: f.echeance, reste: f.reste, retard: f.retard,
+    niveau_atteint: f.niveau_atteint, niveau_selon_retard: f.niveau_retard,
+    prochain_niveau: c.exclu ? null : f.prochaine?.niveau ?? null, prochaine_date: c.exclu ? null : f.prochaine?.date ?? null,
+  })));
+  let r = await sb.from('relances_suivi').delete().gte('id', 0);
+  if (r.error) throw new Error(r.error.message);
+  for (let k = 0; k < rows.length; k += 500) {
+    r = await sb.from('relances_suivi').insert(rows.slice(k, k + 500));
+    if (r.error) throw new Error(r.error.message);
+  }
+}
+/** Relit seulement les factures ouvertes dans Archie (plus rapide qu'une analyse complète). */
+async function actualiserRelances() {
+  S.relancesEnCours = true; renderBody();
+  try {
+    const lots = await Promise.all(SPACES.map(async (space) => {
+      const out = []; let curseur = null;
+      do { const r = await appelFonction('archie-donnees', { space, quoi: 'ouvertes', since: RL.DEBUT_PERIMETRE, curseur }); out.push(...r.items); curseur = r.curseur; } while (curseur);
+      return out;
+    }));
+    await calculerRelances(lots.flat());
+    toast('Relances actualisées');
+  } catch (e) { toast(`Actualisation impossible : ${e.message}`); }
+  S.relancesEnCours = false; render();
+}
+const NIV = (n) => (n ? `Niveau ${n} · ${RL.LIBELLE_NIVEAU[n]}` : '—');
+function relancesView() {
+  const R = S.relances;
+  if (!R) return `<div class="empty">Relances non calculées. <button class="btn sm" onclick="A.actualiserRelances()">Actualiser</button></div>`;
+  const actifs = R.clients.filter((c) => !c.exclu);
+  const tot = (L) => L.reduce((s, c) => s + c.total, 0);
+  const parRetard = [1, 2, 3, 4, 5].map((n) => { const F = actifs.flatMap((c) => c.factures).filter((f) => f.niveau_retard === n); return [n, F.length, F.reduce((s, f) => s + f.reste, 0)]; });
+  const prochains = actifs.filter((c) => c.prochaine_date === R.creneau);
+  let h = `<div class="info"><b>${R.actives ? 'Relances activées' : 'Lecture seule : aucune relance n\'est envoyée.'}</b>
+    Dernier relevé analysé le ${R.dernierReleve ? dfr(R.dernierReleve) : '—'}${R.suspendues ? ' — <b>plus de 2 jours ouvrés : les envois seraient suspendus</b>' : ''}.
+    Calcul du ${R.calcule_le.toLocaleDateString('fr-FR')} à ${R.calcule_le.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}.
+    <button class="btn sm" style="margin-left:8px" onclick="A.actualiserRelances()" ${S.relancesEnCours ? 'disabled' : ''}>${S.relancesEnCours ? 'Lecture d\'Archie…' : 'Actualiser'}</button></div>
+    <div class="modal" style="width:auto;max-width:none;box-shadow:none;border:1px solid var(--line);padding:16px 20px"><div class="kv" style="grid-template-columns:260px 1fr;margin:0">
+      <span>Clients à relancer</span><b>${actifs.length} · ${actifs.reduce((s, c) => s + c.factures.length, 0)} factures · ${eur(tot(actifs))}</b>
+      <span>Clients exclus (« ne pas relancer »)</span><b>${R.clients.length - actifs.length}</b>
+      <span>Prochain envoi possible</span><b>${dfr(R.creneau)} à 8 h · ${prochains.length} client(s)</b>
+      ${parRetard.map(([n, k, m]) => `<span>Selon le retard : ${NIV(n)}</span><b>${k} facture(s) · ${eur(m)}</b>`).join('')}
+      <span>Hors périmètre (échues avant le ${dfr(RL.DEBUT_PERIMETRE)})</span><b>${R.hors.factures} facture(s) · ${eur(R.hors.total)}</b>
+    </div></div>`;
+  const q = Q.toLowerCase();
+  const L = R.clients.filter((c) => !Q || (c.client + ' ' + c.factures.map((f) => f.ref).join(' ')).toLowerCase().includes(q));
+  h += `<table><thead><tr><th>Client</th><th>Factures en retard</th><th class="num">Reste dû</th><th class="num">Retard max</th><th>Niveau atteint</th><th>Prochaine relance</th><th class="num">Action</th></tr></thead><tbody>`;
+  if (!L.length) h += `<tr><td colspan="7" class="empty">Aucune facture en retard.</td></tr>`;
+  for (const c of L) {
+    const facs = c.factures.slice(0, 6).map((f) => `<div><span class="ref">${esc(f.ref)}</span> · ${esc(f.site)} · éch. ${dfr(f.echeance)} · ${eur(f.reste)}</div>`).join('') + (c.factures.length > 6 ? `<div class="sub">+ ${c.factures.length - 6} autre(s)</div>` : '');
+    h += `<tr class="${c.exclu ? 'err' : ''}"><td><div class="strong">${esc(c.client)}</div>${c.particulier ? '<span class="badge b-part">Particulier : pas de frais de 40 €</span> ' : ''}${c.exclu ? `<span class="badge b-refus">Exclu${c.exclu.motif ? ' : ' + esc(c.exclu.motif) : ''}</span>` : ''}</td>
+      <td class="facs">${facs}</td><td class="num strong">${eur(c.total)}</td><td class="num">${c.retard_max} j</td>
+      <td>${c.niveau_atteint ? esc(NIV(c.niveau_atteint)) : '<span class="sub">aucune relance</span>'}</td>
+      <td>${c.exclu ? '<span class="sub">aucune (exclu)</span>' : c.prochaine_date ? `<span class="badge b-niv">${esc(NIV(c.prochain_niveau))}</span><div class="sub">le ${dfr(c.prochaine_date)} à 8 h</div>` : '—'}</td>
+      <td class="num">${!c.group_uuid ? '' : c.exclu ? `<button class="btn sm" onclick="A.reintegrer('${c.group_uuid}')">Réintégrer</button>` : `<button class="btn sm danger" onclick="A.exclureBox('${c.group_uuid}')">Exclure</button>`}</td></tr>`;
+  }
+  return h + `</tbody></table>`;
+}
+function exclureBox(g) {
+  const c = S.relances.clients.find((x) => x.group_uuid === g);
+  $('#modal').innerHTML = `<h3>Ne plus relancer ${esc(c.client)} ?</h3><p>Le client ne recevra aucune relance tant qu'il n'est pas réintégré.</p>
+    <textarea id="motif" rows="2" placeholder="Motif : litige, accord de paiement…"></textarea>
+    <div class="row"><button class="btn" onclick="A.fermer()">Annuler</button><button class="btn danger" id="mok">Exclure</button></div>`;
+  $('#mok').onclick = async () => {
+    const motif = $('#motif').value.trim(); closeM();
+    const { error } = await sb.from('ne_pas_relancer').upsert({ group_uuid: g, client: c.client, motif, par: USER.id, par_email: USER.email, quand: new Date().toISOString() }, { onConflict: 'group_uuid' });
+    if (error) { toast(`Exclusion impossible : ${error.message}`); return; }
+    journal('exclusion relances', { resultat: `${c.client}${motif ? ' : ' + motif : ''}` });
+    await calculerRelances(S.facturesOuvertes); render(); toast('Client exclu des relances');
+  };
+  $('#mbg').classList.add('show');
+}
+async function reintegrer(g) {
+  const c = S.relances.clients.find((x) => x.group_uuid === g);
+  const { error } = await sb.from('ne_pas_relancer').delete().eq('group_uuid', g);
+  if (error) { toast(`Réintégration impossible : ${error.message}`); return; }
+  journal('réintégration relances', { resultat: c?.client || g });
+  await calculerRelances(S.facturesOuvertes); render(); toast('Client réintégré');
+}
+
+// ============================================================================ Excel (adresse protégée par jeton)
+async function sha256hex(t) {
+  const b = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(t));
+  return [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, '0')).join('');
+}
+async function excelBox(nouvelleAdresse) {
+  const { data: jetons } = await sb.from('jetons_export').select('id,libelle,cree_par_email,cree_le,revoque_le,dernier_usage').order('cree_le', { ascending: false });
+  const actifs = (jetons || []).filter((j) => !j.revoque_le);
+  $('#modal').innerHTML = `<h3>Classeur Excel « Suivi The Bureau »</h3>
+    <p>Excel lit les données en lecture seule grâce à une adresse personnelle. Elle donne accès aux données : ne la partagez pas.</p>
+    <p class="sub">1. Excel : Données › À partir du Web, collez l'adresse, OK (accès « Anonyme » si demandé).<br>
+    2. Dans le Navigateur, cochez « Sélectionner plusieurs éléments », puis les tableaux voulus, et Charger.<br>
+    3. Enregistrez le classeur. Ensuite, Données › Actualiser tout met tout à jour.</p>
+    ${nouvelleAdresse ? `<p><b>Nouvelle adresse (affichée une seule fois) :</b></p><code class="url" id="url-excel">${esc(nouvelleAdresse)}</code>` : ''}
+    ${actifs.length ? `<div class="kv" style="grid-template-columns:1fr auto">${actifs.map((j) => `<span>${esc(j.libelle || 'Adresse')} · ${esc(j.cree_par_email)} · ${new Date(j.cree_le).toLocaleDateString('fr-FR')}${j.dernier_usage ? ' · utilisée le ' + new Date(j.dernier_usage).toLocaleDateString('fr-FR') : ''}</span><button class="link" onclick="A.revoquer('${j.id}')">Révoquer</button>`).join('')}</div>` : ''}
+    <div class="row"><button class="btn" onclick="A.fermer()">Fermer</button>${nouvelleAdresse ? '<button class="btn" id="copier">Copier l\'adresse</button>' : ''}<button class="btn primary" id="mok">Créer une adresse</button></div>`;
+  $('#mok').onclick = async () => {
+    const octets = crypto.getRandomValues(new Uint8Array(32));
+    const jeton = btoa(String.fromCharCode(...octets)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    const { error } = await sb.from('jetons_export').insert({ empreinte: await sha256hex(jeton), libelle: `Excel de ${$('#nom').value || USER.email}`, cree_par: USER.id });
+    if (error) { toast(`Création impossible : ${error.message}`); return; }
+    journal('adresse Excel créée', { resultat: `par ${USER.email}` });
+    excelBox(`${C.SUPABASE_URL}/functions/v1/export?jeton=${jeton}`);
+  };
+  $('#copier')?.addEventListener('click', async () => { try { await navigator.clipboard.writeText($('#url-excel').textContent); toast('Adresse copiée'); } catch { toast('Copie impossible : sélectionnez l\'adresse à la main'); } });
+  $('#mbg').classList.add('show');
+}
+async function revoquer(id) {
+  const { error } = await sb.from('jetons_export').update({ revoque_le: new Date().toISOString() }).eq('id', id);
+  if (error) { toast(`Révocation impossible : ${error.message}`); return; }
+  journal('adresse Excel révoquée', { resultat: id });
+  toast('Adresse révoquée'); excelBox();
+}
+
 /** Explication de l'écart entre le virement et le montant pointé (affichée avant validation). */
 function texteEcart(credit, tot) {
   const d = Math.round((credit - tot) * 100) / 100;
@@ -185,6 +324,7 @@ async function analyser() {
   for (const l of lots) if (!l.compte_virement) avert.push(`${l.site} : compte « Virement bancaire » introuvable dans Archie, les pointages y échoueront.`);
   for (const l of lots) if (!l.compte_trop_percu) avert.push(`${l.site} : compte « Trop-Perçu » introuvable dans Archie, les avances ne pourront pas y être imputées.`);
   try { await chargerAvances(); } catch (e) { S.avances = []; avert.push(`Avances non chargées : ${e.message}`); }
+  try { await calculerRelances(inv.filter((i) => ['open', 'partially_paid', 'processing_payment'].includes(i.state))); } catch (e) { avert.push(`Relances non calculées : ${e.message}`); }
 
   const decs = await toutLire(() => sb.from('decisions').select('op_id,refus,motif,annulation_demandee').order('op_id'));
   const decisions = Object.fromEntries(decs.map((d) => [d.op_id, d]));
@@ -314,6 +454,7 @@ function render() {
     ${tile('verif', 'À vérifier', verifTodo.length + orphTodo.length + (S.avances || []).length, verifTodo.reduce((x, l) => x + l.credit, 0), 'Une décision est nécessaire')}
     ${tile('cote', 'Mis de côté', sums.cote.n, sums.cote.a, 'Carte, titres-resto, interne, refusés')}
     ${tile('deja', 'Déjà pointé', sums.deja.n, sums.deja.a, 'Pointé avant cette passe')}
+    ${tile('relances', 'Relances', S.relances ? S.relances.clients.filter((c) => !c.exclu).length : '—', S.relances ? S.relances.clients.filter((c) => !c.exclu).reduce((s, c) => s + c.total, 0) : 0, 'Clients en retard (lecture seule)')}
   </div>
   <div class="ctl ${okCtl ? 'ok' : 'ko'}">Contrôle : ${S.lines.length} encaissements · ${eur(tot)} · <b>${okCtl ? 'tous répartis dans les 4 onglets ✓' : 'écart ' + eur(tot - totTabs)}</b></div>`;
   h += `<div class="tools"><input class="search" id="q" placeholder="Rechercher un client, une facture, un montant…" value="${esc(Q)}">
@@ -334,6 +475,7 @@ function renderBody() {
   if (TAB === 'verif') b.innerHTML = verifView();
   if (TAB === 'cote') b.innerHTML = coteView();
   if (TAB === 'deja') b.innerHTML = dejaView();
+  if (TAB === 'relances') b.innerHTML = relancesView();
   chips(); dock();
 }
 function statusCell(l, selectable) {
@@ -687,6 +829,7 @@ window.A = {
   filtre: (k, v) => { FILT[k] = v; renderBody(); },
   pick: (id, on) => { if (on) PICK.add(id); else { PICK.delete(id); delete OVR[id]; } renderBody(); },
   choisir, montant, validerUne, refuserBox, annulerBox, impMontant, imputerBox, emailBox,
+  actualiserRelances, exclureBox, reintegrer, revoquer,
   vu: (id) => refuser([id], ''),
   remettre,
   fermer: closeM,
@@ -698,6 +841,7 @@ $('#b-deposer').addEventListener('click', () => $('#fichier').click());
 $('#fichier').addEventListener('change', (e) => deposer(e.target.files[0]));
 $('#b-reload').addEventListener('click', () => analyser());
 $('#b-clore').addEventListener('click', clore);
+$('#b-excel').addEventListener('click', () => excelBox());
 $('#b-out').addEventListener('click', async () => { await sb.auth.signOut(); courant = null; vueConnexion(); });
 $('#nom').addEventListener('change', async (e) => {
   const nom = e.target.value.trim().slice(0, 40);
