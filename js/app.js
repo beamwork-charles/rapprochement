@@ -1,9 +1,9 @@
 // Écran « Pointage » : connexion, dépôt du relevé, analyse (moteur dans le navigateur), validation vers Archie.
 // Portage de src_reference/ui/index.html + server.py sur Supabase.
-import { lireReleve } from './releve.js?v=20261126-15';
-import * as E from './engine.js?v=20261126-15';
-import * as RL from './relances.js?v=20261126-15';
-import * as D from './relances-donnees.js?v=20261126-15';
+import { lireReleve } from './releve.js?v=20261126-16';
+import * as E from './engine.js?v=20261126-16';
+import * as RL from './relances.js?v=20261126-16';
+import * as D from './relances-donnees.js?v=20261126-16';
 
 const C = window.CONFIG || {};
 const XLSX = window.XLSX;
@@ -190,7 +190,8 @@ function relancesView() {
     Dernier relevé analysé le ${R.dernierReleve ? dfr(R.dernierReleve) : '—'}${R.suspendues ? ' — <b>plus de 2 jours ouvrés : les envois seraient suspendus</b>' : ''}.
     Calcul du ${R.calcule_le.toLocaleDateString('fr-FR')} à ${R.calcule_le.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}.
     <button class="btn sm" id="b-act-rel" style="margin-left:8px" onclick="A.actualiserRelances()" ${S.relancesEnCours || S.archieEnCours ? 'disabled' : ''}>${S.relancesEnCours ? esc(S.relancesProgression || "Lecture d'Archie…") : S.archieEnCours ? 'Mise à jour en cours…' : 'Actualiser'}</button>
-    <button class="btn sm" onclick="A.vueRelances('textes')">Textes des relances</button></div>
+    <button class="btn sm" onclick="A.vueRelances('textes')">Textes des relances</button>
+    <button class="btn sm" onclick="A.lienSuivi()">Lien de suivi niveau 5</button></div>
     <div class="modal" style="width:auto;max-width:none;box-shadow:none;border:1px solid var(--line);padding:16px 20px"><div class="kv" style="grid-template-columns:260px 1fr;margin:0">
       <span>Clients à relancer</span><b>${actifs.length} · ${actifs.reduce((s, c) => s + c.factures.length, 0)} factures · ${eur(tot(actifs))}</b>
       <span>Clients exclus (« ne pas relancer »)</span><b>${R.clients.length - actifs.length}</b>
@@ -266,6 +267,36 @@ async function revoquer(id) {
   if (error) { toast(`Révocation impossible : ${error.message}`); return; }
   journal('adresse Excel révoquée', { resultat: id });
   toast('Adresse révoquée'); excelBox();
+}
+
+// ============================================================================ lien de la page « Suivi niveau 5 » (sans connexion)
+async function lienSuiviBox(nouveauLien) {
+  const { data: liens } = await sb.from('jetons_suivi').select('id,libelle,cree_par_email,cree_le,revoque_le,dernier_usage').order('cree_le', { ascending: false });
+  const actifs = (liens || []).filter((j) => !j.revoque_le);
+  $('#modal').innerHTML = `<h3>Lien de suivi niveau 5</h3>
+    <p>Ce lien ouvre directement la page de suivi des clients au niveau 5, sans connexion. Il ne donne accès à rien d'autre.
+    Toute personne qui le possède voit cette liste (clients, contacts, montants) : envoyez-le seulement à la personne concernée.</p>
+    ${nouveauLien ? `<p><b>Nouveau lien (affiché une seule fois) :</b></p><code class="url" id="url-suivi">${esc(nouveauLien)}</code>` : ''}
+    ${actifs.length ? `<div class="kv" style="grid-template-columns:1fr auto">${actifs.map((j) => `<span>${esc(j.libelle || 'Lien')} · créé par ${esc(j.cree_par_email)} le ${new Date(j.cree_le).toLocaleDateString('fr-FR')}${j.dernier_usage ? ' · ouvert le ' + new Date(j.dernier_usage).toLocaleDateString('fr-FR') : ' · jamais ouvert'}</span><button class="link" onclick="A.revoquerLien('${j.id}')">Révoquer</button>`).join('')}</div>` : '<p class="sub">Aucun lien actif.</p>'}
+    <div class="row" style="align-items:center;flex-wrap:wrap"><input id="lien-pour" class="search" style="width:180px" placeholder="Pour qui ?" value="Oscar">
+      <span class="spacer"></span><button class="btn" onclick="A.fermer()">Fermer</button>${nouveauLien ? '<button class="btn" id="copier">Copier le lien</button>' : ''}<button class="btn primary" id="mok">Créer un lien</button></div>`;
+  $('#mok').onclick = async () => {
+    const octets = crypto.getRandomValues(new Uint8Array(32));
+    const cle = btoa(String.fromCharCode(...octets)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    const pour = ($('#lien-pour').value || '').trim().slice(0, 40) || 'Lien';
+    const { error } = await sb.from('jetons_suivi').insert({ empreinte: await sha256hex(cle), libelle: pour, cree_par: USER.id });
+    if (error) { toast(`Création impossible : ${error.message}`); return; }
+    journal('lien de suivi créé', { resultat: `pour ${pour}` });
+    lienSuiviBox(`${location.origin}${location.pathname.replace(/[^/]*$/, '')}suivi.html#cle=${cle}`);
+  };
+  $('#copier')?.addEventListener('click', async () => { try { await navigator.clipboard.writeText($('#url-suivi').textContent); toast('Lien copié'); } catch { toast('Copie impossible : sélectionnez le lien à la main'); } });
+  $('#mbg').classList.add('show');
+}
+async function revoquerLien(id) {
+  const { error } = await sb.from('jetons_suivi').update({ revoque_le: new Date().toISOString() }).eq('id', id);
+  if (error) { toast(`Révocation impossible : ${error.message}`); return; }
+  journal('lien de suivi révoqué', { resultat: id });
+  toast('Lien révoqué'); lienSuiviBox();
 }
 
 /** Explication de l'écart entre le virement et le montant pointé (affichée avant validation). */
@@ -1031,7 +1062,8 @@ window.A = {
   filtre: (k, v) => { FILT[k] = v; renderBody(); },
   pick: (id, on) => { if (on) PICK.add(id); else { PICK.delete(id); delete OVR[id]; } renderBody(); },
   choisir, montant, validerUne, refuserBox, annulerBox, impMontant, imputerBox, emailBox,
-  actualiserRelances, exclureBox, reintegrer, revoquer, enregistrerModele, validerModele,
+  actualiserRelances, exclureBox, reintegrer, revoquer, enregistrerModele, validerModele, revoquerLien,
+  lienSuivi: () => lienSuiviBox(),
   vueRelances: async (v) => {
     S.vueRelances = v; renderBody();
     if (v === 'textes') { try { await chargerModeles(); } catch (e) { toast(`Textes non chargés : ${e.message}`); } renderBody(); }

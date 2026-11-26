@@ -1,7 +1,10 @@
 // Page « Suivi niveau 5 » (Oscar, Charles) : séparée de l'écran de pointage, lecture seule.
 // Affiche tout de suite le dernier calendrier enregistré, puis relit les factures ouvertes dans Archie en arrière-plan.
-import * as D from './relances-donnees.js?v=20261126-15';
-import * as RL from './relances.js?v=20261126-15';
+// Deux façons d'y accéder :
+//   • par lien (…/suivi.html#cle=…) : aucune connexion ; la fonction « suivi » vérifie la clé et ne renvoie que le niveau 5 ;
+//   • connecté avec un compte @thebureau.paris.
+import * as D from './relances-donnees.js?v=20261126-16';
+import * as RL from './relances.js?v=20261126-16';
 
 const C = window.CONFIG || {};
 const $ = (s) => document.querySelector(s);
@@ -16,6 +19,55 @@ const estMembre = (e) => String(e || '').toLowerCase().endsWith('@' + C.DOMAINE)
 let sb = null, USER = null, courant;
 let ETAT = null; // { R, chargement, maj, progression, erreur, erreurMaj }
 let TRI = 'retard', Q = '';
+const CLE = new URLSearchParams(location.hash.slice(1)).get('cle'); // lien de suivi sans connexion
+
+/** Clients au niveau 5 (par lien, la fonction n'a renvoyé qu'eux). */
+const clients5 = (R) => (R.mode === 'lien' ? R.clients : D.niveau5(R));
+
+// ---------------------------------------------------------------------------- accès par lien
+async function appelLien(quoi) {
+  const r = await fetch(`${C.SUPABASE_URL}/functions/v1/suivi`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', apikey: C.SUPABASE_ANON_KEY }, body: JSON.stringify({ cle: CLE, quoi }),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) { const e = new Error(j.error || `Erreur ${r.status}`); e.statut = r.status; throw e; }
+  return { ...j, mode: 'lien', calcule_le: j.calcule_le ? new Date(j.calcule_le) : null };
+}
+function lienInvalide(msg) {
+  ETAT = null;
+  $('#main').innerHTML = `<div class="center"><h2>Lien non valide</h2><p>${esc(msg)}</p></div>`;
+}
+async function demarrerLien() {
+  ETAT = { R: null, chargement: true, maj: false };
+  rendu();
+  const etat = ETAT;
+  try { etat.R = await appelLien('donnees'); } catch (e) { if (e.statut === 403 || e.statut === 400) return lienInvalide(e.message); etat.erreur = e.message; }
+  etat.chargement = false;
+  rendu();
+  actualiserLien();
+}
+async function actualiserLien() {
+  const etat = ETAT;
+  if (!etat || etat.maj) return;
+  const debut = Date.now(), parPas = D.memoire.lire('sec_actualisation_lien', 12);
+  const maj = () => {
+    etat.progression = `Lecture d'Archie · ${D.estimation(debut, 0, 1, parPas)}`;
+    const e = $('#progression'); if (e && ETAT === etat) e.textContent = etat.progression;
+  };
+  etat.maj = true; etat.erreurMaj = null; maj(); rendu();
+  const tic = setInterval(maj, 1000);
+  try {
+    const R = await appelLien('actualiser');
+    D.memoire.ecrire('sec_actualisation_lien', ((Date.now() - debut) / 1000).toFixed(1));
+    if (ETAT !== etat) return;
+    etat.R = R; etat.erreur = null;
+  } catch (e) {
+    if (e.statut === 403) { clearInterval(tic); return lienInvalide(e.message); }
+    etat.erreurMaj = e.message;
+  } finally { clearInterval(tic); }
+  etat.maj = false;
+  if (ETAT === etat) rendu();
+}
 
 async function appel(nom, body) {
   for (let essai = 0; ; essai++) {
@@ -102,13 +154,13 @@ function rendu() {
   const etatArchie = ETAT.maj
     ? `<span class="maj"><span class="spin"></span> Mise à jour depuis Archie — <span id="progression">${esc(ETAT.progression || '')}</span></span>`
     : ETAT.erreurMaj ? `<span class="maj ko">Archie non relu : ${esc(ETAT.erreurMaj)}</span>` : '';
-  let h = `<div class="etat">${R ? `<span>Dernière mise à jour : <b>${esc(quand(R.calcule_le))}</b></span>` : '<span>Aucune donnée enregistrée</span>'}
+  let h = `<div class="etat">${R?.calcule_le ? `<span>Dernière mise à jour : <b>${esc(quand(R.calcule_le))}</b></span>` : '<span>Aucune donnée enregistrée</span>'}
     ${etatArchie}<button class="btn sm" onclick="S.actualiser()" ${ETAT.maj ? 'disabled' : ''}>Actualiser</button></div>`;
   if (ETAT.erreur && !R) { m.innerHTML = h + `<div class="empty">Chargement impossible : ${esc(ETAT.erreur)}</div>`; return; }
   if (!R) { m.innerHTML = h + `<div class="empty">Lecture d'Archie en cours…</div>`; return; }
 
   if (!R.actives) h += `<div class="info">Les relances automatiques ne sont pas encore activées : le niveau 5 est estimé d'après le retard de la facture la plus ancienne de chaque client (niveau 4 à J+14, niveau 5 trois jours ouvrés plus tard).</div>`;
-  const tous = D.niveau5(R);
+  const tous = clients5(R);
   h += `<div class="resume"><div><div class="n">${tous.length}</div><div class="l">clients au niveau 5</div></div>
     <div><div class="n">${eur0(tous.reduce((s, c) => s + c.total, 0))}</div><div class="l">restant dû</div></div>
     <div><div class="n">${tous.reduce((s, c) => s + c.factures.length, 0)}</div><div class="l">factures</div></div></div>
@@ -123,7 +175,7 @@ function rendu() {
 /** Lignes du tableau (recherche et tri sans redessiner la page). */
 function tableau() {
   const R = ETAT?.R; if (!R || !$('#corps')) return;
-  const tous = D.niveau5(R);
+  const tous = clients5(R);
   const q = Q.trim().toLowerCase();
   const L = tous.filter((c) => !q || [c.client, c.manager, c.manager_email, ...c.contacts, ...c.factures.map((f) => f.ref)].join(' ').toLowerCase().includes(q));
   const cle = { retard: (c) => c.retard_max, montant: (c) => c.total, relances: (c) => c.relances.length };
@@ -152,12 +204,14 @@ function ligne(c, R) {
 }
 
 window.S = {
-  actualiser: () => actualiser(),
+  actualiser: () => (CLE ? actualiserLien() : actualiser()),
   trier: (k) => { TRI = k; tableau(); },
 };
 
 (async function init() {
-  if (!C.SUPABASE_URL || !C.SUPABASE_ANON_KEY || !window.supabase) { $('#main').innerHTML = '<div class="center"><h2>Configuration en attente</h2></div>'; return; }
+  if (!C.SUPABASE_URL || !C.SUPABASE_ANON_KEY) { $('#main').innerHTML = '<div class="center"><h2>Configuration en attente</h2></div>'; return; }
+  if (CLE) return demarrerLien(); // par lien : ni connexion, ni compte affiché
+  if (!window.supabase) { $('#main').innerHTML = '<div class="center"><h2>Configuration en attente</h2></div>'; return; }
   sb = window.supabase.createClient(C.SUPABASE_URL, C.SUPABASE_ANON_KEY, { auth: { persistSession: true, detectSessionInUrl: true } });
   $('#b-out').addEventListener('click', async () => { await sb.auth.signOut(); courant = null; vueConnexion(); });
   const { data } = await sb.auth.getSession();
