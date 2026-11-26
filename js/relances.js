@@ -135,8 +135,11 @@ export const dateNiveau5 = (echeance) => ajouterOuvres(ajouterJours(echeance, DE
  * @param envoyees   relances déjà faites : [{ group_uuid, niveau, date, factures: [uuid] }]
  * @param exclus     { group_uuid: { motif } } (liste « ne pas relancer »)
  */
-export function calendrier(factures, envoyees, exclus, maintenant = new Date()) {
-  const { aujourdhui, creneau } = premierCreneau(maintenant);
+export function calendrier(factures, envoyees, exclus, maintenant = new Date(), pasAvant = null) {
+  const premier = premierCreneau(maintenant);
+  const aujourdhui = premier.aujourdhui;
+  // verrou « aucun envoi avant le … » (paramètre relances_pas_avant) : le premier créneau ne peut pas être plus tôt
+  const creneau = pasAvant && premier.creneau < pasAvant ? prochainOuvre(pasAvant) : premier.creneau;
   const histo = new Map(); // uuid facture -> { niveau, date }
   for (const r of envoyees) for (const u of r.factures || []) {
     const h = histo.get(u);

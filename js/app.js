@@ -1,9 +1,9 @@
 // Écran « Pointage » : connexion, dépôt du relevé, analyse (moteur dans le navigateur), validation vers Archie.
 // Portage de src_reference/ui/index.html + server.py sur Supabase.
-import { lireReleve } from './releve.js?v=20261126-16';
-import * as E from './engine.js?v=20261126-16';
-import * as RL from './relances.js?v=20261126-16';
-import * as D from './relances-donnees.js?v=20261126-16';
+import { lireReleve } from './releve.js?v=20261126-17';
+import * as E from './engine.js?v=20261126-17';
+import * as RL from './relances.js?v=20261126-17';
+import * as D from './relances-donnees.js?v=20261126-17';
 
 const C = window.CONFIG || {};
 const XLSX = window.XLSX;
@@ -187,6 +187,7 @@ function relancesView() {
   const parRetard = [1, 2, 3, 4, 5].map((n) => { const F = actifs.flatMap((c) => c.factures).filter((f) => f.niveau_retard === n); return [n, F.length, F.reduce((s, f) => s + f.reste, 0)]; });
   const prochains = actifs.filter((c) => c.prochaine_date === R.creneau);
   let h = `<div class="info"><b>${R.actives ? 'Relances activées' : 'Lecture seule : aucune relance n\'est envoyée.'}</b>
+    ${R.pasAvant ? `<b>Aucun envoi avant le ${dfr(R.pasAvant)}</b> (verrou demandé par Charles).` : ''}
     Dernier relevé analysé le ${R.dernierReleve ? dfr(R.dernierReleve) : '—'}${R.suspendues ? ' — <b>plus de 2 jours ouvrés : les envois seraient suspendus</b>' : ''}.
     Calcul du ${R.calcule_le.toLocaleDateString('fr-FR')} à ${R.calcule_le.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}.
     <button class="btn sm" id="b-act-rel" style="margin-left:8px" onclick="A.actualiserRelances()" ${S.relancesEnCours || S.archieEnCours ? 'disabled' : ''}>${S.relancesEnCours ? esc(S.relancesProgression || "Lecture d'Archie…") : S.archieEnCours ? 'Mise à jour en cours…' : 'Actualiser'}</button>
@@ -372,9 +373,10 @@ async function chargerReleve() {
   S = { status: 'loading', progress: 'Chargement du relevé…', lines: [], orphelins: [], invoices: [], actions: {}, avertissements: [], sending: false, releve: null };
   render();
   try {
-    const { data: rel, error } = await sb.from('releves').select('*').neq('statut', 'clos').order('depose_le', { ascending: false }).limit(1);
+    // toujours le relevé le plus récent ; s'il a été clôturé, il n'y a rien à traiter (on ne revient pas à un relevé plus ancien)
+    const { data: rel, error } = await sb.from('releves').select('*').order('depose_le', { ascending: false }).limit(1);
     if (error) throw new Error(error.message);
-    if (!rel.length) { S.status = 'empty'; return render(); }
+    if (!rel.length || rel[0].statut === 'clos') { S.status = 'empty'; return render(); }
     S.releve = rel[0];
     const ops = await toutLire(() => sb.from('operations').select('*').eq('releve_id', S.releve.id).order('ordre'));
     S.bank = ops.map((o) => ({

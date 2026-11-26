@@ -1,6 +1,6 @@
 // Données du calendrier des relances, communes à l'écran principal et à la page de suivi « niveau 5 ».
 // Le calcul lui-même est dans relances.js (même règle partout).
-import * as RL from './relances.js?v=20261126-16';
+import * as RL from './relances.js?v=20261126-17';
 
 export const SPACES = ['16-cours-albert-1er', '25-rue-du-4-septembre', '28-cours-albert-1er', '42-rue-notre-dame-des-victoires'];
 const dateParis = (q) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Paris', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(q));
@@ -52,12 +52,15 @@ export async function contexte(sb) {
     exclus: Object.fromEntries(npr.map((n) => [n.group_uuid, n])),
     dernierReleve: rel.data?.[0]?.analyse_le ? dateParis(rel.data[0].analyse_le) : null,
     actives: (par.data || []).find((p) => p.cle === 'relances_actives')?.valeur === true,
+    // verrou : aucun envoi avant cette date (AAAA-MM-JJ), quel que soit l'état d'activation
+    pasAvant: (() => { const v = (par.data || []).find((p) => p.cle === 'relances_pas_avant')?.valeur; return typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : null; })(),
   };
 }
 
 /** Calendrier complet à partir des factures ouvertes. */
 export function calculer(factures, ctx, calcule_le = new Date()) {
-  const R = RL.calendrier(factures, ctx.envoyees, ctx.exclus);
+  const R = RL.calendrier(factures, ctx.envoyees, ctx.exclus, new Date(), ctx.pasAvant);
+  R.pasAvant = ctx.pasAvant && ctx.pasAvant > R.aujourdhui ? ctx.pasAvant : null;
   R.dernierReleve = ctx.dernierReleve;
   R.suspendues = !R.dernierReleve || RL.ouvresEntre(R.dernierReleve, R.aujourdhui) > 2;
   R.actives = ctx.actives;
