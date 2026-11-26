@@ -1,9 +1,9 @@
 // Écran « Pointage » : connexion, dépôt du relevé, analyse (moteur dans le navigateur), validation vers Archie.
 // Portage de src_reference/ui/index.html + server.py sur Supabase.
-import { lireReleve } from './releve.js?v=20261126-12';
-import * as E from './engine.js?v=20261126-12';
-import * as RL from './relances.js?v=20261126-12';
-import * as D from './relances-donnees.js?v=20261126-12';
+import { lireReleve } from './releve.js?v=20261126-13';
+import * as E from './engine.js?v=20261126-13';
+import * as RL from './relances.js?v=20261126-13';
+import * as D from './relances-donnees.js?v=20261126-13';
 
 const C = window.CONFIG || {};
 const XLSX = window.XLSX;
@@ -314,6 +314,9 @@ async function afficher(session) {
   courant = user ? user.id : null;
   if (!user) return vueConnexion();
   if (!estMembre(user.email)) { await sb.auth.signOut(); return vueConnexion(`Adresse @${C.DOMAINE} uniquement.`); }
+  // accès « suivi seul » (Oscar) : uniquement la page Suivi niveau 5 — la base et les fonctions le refusent de toute façon
+  const { data: acces } = await sb.rpc('mon_acces');
+  if (acces === 'suivi') { location.replace('suivi.html'); return; }
   USER = user;
   await sb.from('profils').upsert({ id: user.id, email: user.email }, { onConflict: 'id', ignoreDuplicates: true });
   const { data } = await sb.from('profils').select('nom').eq('id', user.id).maybeSingle();

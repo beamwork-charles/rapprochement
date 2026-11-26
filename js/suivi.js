@@ -1,7 +1,7 @@
 // Page « Suivi niveau 5 » (Oscar, Charles) : séparée de l'écran de pointage, lecture seule.
 // Affiche tout de suite le dernier calendrier enregistré, puis relit les factures ouvertes dans Archie en arrière-plan.
-import * as D from './relances-donnees.js?v=20261126-12';
-import * as RL from './relances.js?v=20261126-12';
+import * as D from './relances-donnees.js?v=20261126-13';
+import * as RL from './relances.js?v=20261126-13';
 
 const C = window.CONFIG || {};
 const $ = (s) => document.querySelector(s);
