@@ -1,9 +1,9 @@
 // Écran « Pointage » : connexion, dépôt du relevé, analyse (moteur dans le navigateur), validation vers Archie.
 // Portage de src_reference/ui/index.html + server.py sur Supabase.
-import { lireReleve } from './releve.js?v=20261126-14';
-import * as E from './engine.js?v=20261126-14';
-import * as RL from './relances.js?v=20261126-14';
-import * as D from './relances-donnees.js?v=20261126-14';
+import { lireReleve } from './releve.js?v=20261126-15';
+import * as E from './engine.js?v=20261126-15';
+import * as RL from './relances.js?v=20261126-15';
+import * as D from './relances-donnees.js?v=20261126-15';
 
 const C = window.CONFIG || {};
 const XLSX = window.XLSX;
@@ -447,20 +447,23 @@ async function analyser({ arrierePlan = false } = {}) {
   const dmin = credits.map((l) => l.date).sort()[0];
   const recul = (n) => new Date(Date.parse(dmin + 'T00:00:00Z') - n * 86400000).toISOString().slice(0, 10);
   let nLots = 0, finis = 0;
-  const debutLecture = Date.now(), attendus = D.memoire.lire('lots_archie', 30); // nombre de lots de la lecture précédente
+  // nombre de lots et durée par lot de la lecture précédente, pour estimer le temps restant
+  const debutLecture = Date.now(), attendus = D.memoire.lire('lots_archie', 30), parLot = D.memoire.lire('sec_par_lot', 1);
   const maj = () => {
     if (perime()) return;
-    S.progress = `Lecture d'Archie : ${finis}/${SPACES.length} bâtiments · ${D.estimation(debutLecture, Math.min(nLots, attendus - 0.5), attendus, 1)}`;
+    S.progress = `Lecture d'Archie : ${finis}/${SPACES.length} bâtiments · ${D.estimation(debutLecture, Math.min(nLots, attendus - 0.5), attendus, parLot)}`;
     if (S.status === 'loading') render(); else majEtatArchie();
   };
   maj();
+  const tic = setInterval(maj, 1000); // le compte à rebours avance chaque seconde
   const lots = await Promise.all(SPACES.map(async (space) => {
     const r = await lireBatiment(space, recul(120), recul(20), () => { nLots++; maj(); });
     finis++; maj();
     return r;
-  })).catch((e) => { echec(e.message); return null; });
+  })).catch((e) => { echec(e.message); return null; }).finally(() => clearInterval(tic));
   if (!lots || perime()) return;
   D.memoire.ecrire('lots_archie', nLots);
+  D.memoire.ecrire('sec_par_lot', ((Date.now() - debutLecture) / 1000 / Math.max(1, nLots)).toFixed(2));
 
   S.progress = 'Rapprochement…';
   if (arrierePlan) majEtatArchie(); else render();

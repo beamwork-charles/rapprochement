@@ -1,6 +1,6 @@
 // Données du calendrier des relances, communes à l'écran principal et à la page de suivi « niveau 5 ».
 // Le calcul lui-même est dans relances.js (même règle partout).
-import * as RL from './relances.js?v=20261126-14';
+import * as RL from './relances.js?v=20261126-15';
 
 export const SPACES = ['16-cours-albert-1er', '25-rue-du-4-septembre', '28-cours-albert-1er', '42-rue-notre-dame-des-victoires'];
 const dateParis = (q) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Paris', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(q));
@@ -19,8 +19,12 @@ export function duree(s) {
  */
 export function estimation(debut, fait, total, parPas = 1) {
   const ecoule = (Date.now() - debut) / 1000;
-  let reste = fait > 0 ? (ecoule / fait) * Math.max(0, total - fait) : Math.max(0, total * parPas - ecoule);
-  if (fait >= total) reste = 0;
+  if (fait >= total) return 'quelques secondes';
+  // mélange de la durée habituelle (parPas, mesurée la fois précédente) et du rythme observé, qui l'emporte peu à peu
+  const prevu = total * parPas;
+  const observe = fait > 0 ? (ecoule / fait) * total : prevu;
+  const w = Math.min(1, fait / total);
+  const reste = Math.max(0, (1 - w) * prevu + w * observe - ecoule);
   return reste < 4 ? 'quelques secondes' : `environ ${duree(reste)} restantes`;
 }
 
@@ -99,9 +103,10 @@ export async function lireEnregistre(sb) {
  */
 export async function lireOuvertes(appel, progression = () => {}) {
   let lots = 0, finis = 0;
-  const debut = Date.now(), attendus = memo.lire('lots_ouvertes', 8);
-  const maj = () => progression(`Lecture d'Archie : ${finis}/${SPACES.length} bâtiments · ${estimation(debut, Math.min(lots, attendus - 0.5), attendus, 1.2)}`);
+  const debut = Date.now(), attendus = memo.lire('lots_ouvertes', 8), parLot = memo.lire('sec_par_lot_ouvertes', 1.5);
+  const maj = () => progression(`Lecture d'Archie : ${finis}/${SPACES.length} bâtiments · ${estimation(debut, Math.min(lots, attendus - 0.5), attendus, parLot)}`);
   maj();
+  const tic = setInterval(maj, 1000); // le compte à rebours avance chaque seconde
   const parBatiment = await Promise.all(SPACES.map(async (space) => {
     const out = []; let curseur = null;
     do {
@@ -111,7 +116,8 @@ export async function lireOuvertes(appel, progression = () => {}) {
     } while (curseur);
     finis++; maj();
     return out;
-  }));
+  })).finally(() => clearInterval(tic));
   memo.ecrire('lots_ouvertes', lots);
+  memo.ecrire('sec_par_lot_ouvertes', ((Date.now() - debut) / 1000 / Math.max(1, lots)).toFixed(2));
   return parBatiment.flat();
 }
