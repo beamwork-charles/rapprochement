@@ -135,7 +135,78 @@ async function actualiserRelances() {
   S.relancesEnCours = false; render();
 }
 const NIV = (n) => (n ? `Niveau ${n} · ${RL.LIBELLE_NIVEAU[n]}` : '—');
+
+// ---- textes des relances (à valider avant tout envoi)
+async function chargerModeles() {
+  const { data, error } = await sb.from('modeles_relances').select('*').order('ordre');
+  if (error) throw new Error(error.message);
+  S.modeles = data;
+}
+function exempleClient(code) {
+  const C = (S.relances?.clients || []).filter((c) => !c.exclu);
+  if (code === 'niveau4_particulier') return C.find((c) => c.particulier) || C[0];
+  const choisi = C.find((c) => c.cle === S.apercuClient);
+  return choisi || C.find((c) => c.factures.length > 1) || C[0];
+}
+function apercu(m) {
+  const c = exempleClient(m.code);
+  if (!c) return '<span class="sub">Aucun client en retard pour l\'aperçu.</span>';
+  const trame = (S.modeles.find((x) => x.code === 'ultime') || {}).corps || '';
+  const v = RL.variablesRelance(c, S.relances.creneau, [], trame);
+  const objet = $(`#mo-${m.code}`)?.value ?? m.objet, corps = $(`#mc-${m.code}`)?.value ?? m.corps;
+  return `<div class="sub">Aperçu avec ${esc(c.client)} (envoi le ${dfr(S.relances.creneau)})</div>
+    <div style="border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-top:6px;background:#fff">
+      <div class="strong" style="margin-bottom:8px">${esc(RL.rendreModele(objet, v))}</div>
+      <div style="white-space:pre-wrap;font-size:13px">${esc(RL.rendreModele(corps, v))}</div></div>`;
+}
+function textesView() {
+  if (!S.modeles) return `<div class="empty">Chargement des textes…</div>`;
+  const nbValides = S.modeles.filter((m) => m.statut === 'valide').length;
+  const clients = (S.relances?.clients || []).filter((c) => !c.exclu);
+  let h = `<div class="info"><b>Textes des relances : ${nbValides}/${S.modeles.length} validés.</b> Aucun envoi n'est possible tant que tous ne sont pas validés.
+    Variables : ${RL.VARIABLES.map((v) => `<code>{${v}}</code>`).join(' ')}.
+    <button class="btn sm" style="margin-left:8px" onclick="A.vueRelances('calendrier')">Retour au calendrier</button></div>
+    <div class="tools"><label class="sub">Aperçu avec le client <select class="search" style="width:320px" onchange="A.apercuClient(this.value)">${clients.slice(0, 200).map((c) => `<option value="${esc(c.cle)}" ${exempleClient('').cle === c.cle ? 'selected' : ''}>${esc(c.client)} · ${c.factures.length} facture(s)${c.particulier ? ' · particulier' : ''}</option>`).join('')}</select></label></div>`;
+  for (const m of S.modeles) {
+    const statut = m.statut === 'valide'
+      ? `<span class="badge" style="background:var(--green-l);color:var(--green)">Validé par ${esc(m.valide_par_email)} le ${new Date(m.valide_le).toLocaleDateString('fr-FR')}</span>`
+      : '<span class="badge b-confirmer">Brouillon à valider</span>';
+    h += `<div class="section">${esc(m.titre)} <small>version ${m.version} · ${m.destinataire === 'client' ? 'envoyé au client' : m.destinataire === 'interne' ? 'envoyé à Oscar et Charles' : 'envoyé à la main par les opérationnels'}</small></div>
+      <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px;align-items:start">
+        <div>${statut}
+          <input id="mo-${m.code}" class="search" style="width:100%;margin:8px 0" value="${esc(m.objet)}" oninput="A.apercuMaj('${m.code}')">
+          <textarea id="mc-${m.code}" rows="16" style="width:100%;border:1px solid var(--line);border-radius:8px;padding:8px;font:13px/1.45 inherit" oninput="A.apercuMaj('${m.code}')">${esc(m.corps)}</textarea>
+          <div class="acts" style="justify-content:flex-start;margin-top:6px"><button class="btn sm" onclick="A.enregistrerModele('${m.code}')">Enregistrer les modifications</button>
+          <button class="btn sm primary" onclick="A.validerModele('${m.code}')" ${m.statut === 'valide' ? 'disabled' : ''}>Valider ce texte</button></div></div>
+        <div id="ap-${m.code}">${apercu(m)}</div></div>`;
+  }
+  return h;
+}
+async function enregistrerModele(code) {
+  const m = S.modeles.find((x) => x.code === code);
+  const objet = $(`#mo-${code}`).value.trim(), corps = $(`#mc-${code}`).value.replace(/\s+$/, '');
+  if (objet === m.objet && corps === m.corps) { toast('Aucune modification'); return; }
+  const maj = { objet, corps, version: m.version + 1, statut: 'brouillon', modifie_par_email: USER.email, modifie_le: new Date().toISOString(), valide_par_email: null, valide_le: null };
+  const { error } = await sb.from('modeles_relances').update(maj).eq('code', code);
+  if (error) { toast(`Enregistrement impossible : ${error.message}`); return; }
+  await sb.from('modeles_relances_historique').insert({ code, version: maj.version, objet, corps, statut: 'brouillon' });
+  journal('texte de relance modifié', { resultat: `${m.titre} · version ${maj.version}` });
+  await chargerModeles(); renderBody(); toast('Texte enregistré (à revalider)');
+}
+function validerModele(code) {
+  const m = S.modeles.find((x) => x.code === code);
+  if ($(`#mo-${code}`).value.trim() !== m.objet || $(`#mc-${code}`).value.replace(/\s+$/, '') !== m.corps) { toast('Enregistrez d\'abord vos modifications'); return; }
+  confirmBox('Valider ce texte ?', `<p>${esc(m.titre)}, version ${m.version}.</p><p class="sub">Il pourra être utilisé pour les envois. Toute modification ultérieure le repassera en brouillon.</p>`, 'Valider', async () => {
+    const { error } = await sb.from('modeles_relances').update({ statut: 'valide', valide_par_email: USER.email, valide_le: new Date().toISOString() }).eq('code', code);
+    if (error) { toast(`Validation impossible : ${error.message}`); return; }
+    await sb.from('modeles_relances_historique').insert({ code, version: m.version, objet: m.objet, corps: m.corps, statut: 'valide' });
+    journal('texte de relance validé', { resultat: `${m.titre} · version ${m.version}` });
+    await chargerModeles(); renderBody(); toast('Texte validé');
+  });
+}
+
 function relancesView() {
+  if (S.vueRelances === 'textes') return textesView();
   const R = S.relances;
   if (!R) return `<div class="empty">Relances non calculées. <button class="btn sm" onclick="A.actualiserRelances()">Actualiser</button></div>`;
   const actifs = R.clients.filter((c) => !c.exclu);
@@ -145,7 +216,8 @@ function relancesView() {
   let h = `<div class="info"><b>${R.actives ? 'Relances activées' : 'Lecture seule : aucune relance n\'est envoyée.'}</b>
     Dernier relevé analysé le ${R.dernierReleve ? dfr(R.dernierReleve) : '—'}${R.suspendues ? ' — <b>plus de 2 jours ouvrés : les envois seraient suspendus</b>' : ''}.
     Calcul du ${R.calcule_le.toLocaleDateString('fr-FR')} à ${R.calcule_le.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}.
-    <button class="btn sm" style="margin-left:8px" onclick="A.actualiserRelances()" ${S.relancesEnCours ? 'disabled' : ''}>${S.relancesEnCours ? 'Lecture d\'Archie…' : 'Actualiser'}</button></div>
+    <button class="btn sm" style="margin-left:8px" onclick="A.actualiserRelances()" ${S.relancesEnCours ? 'disabled' : ''}>${S.relancesEnCours ? 'Lecture d\'Archie…' : 'Actualiser'}</button>
+    <button class="btn sm" onclick="A.vueRelances('textes')">Textes des relances</button></div>
     <div class="modal" style="width:auto;max-width:none;box-shadow:none;border:1px solid var(--line);padding:16px 20px"><div class="kv" style="grid-template-columns:260px 1fr;margin:0">
       <span>Clients à relancer</span><b>${actifs.length} · ${actifs.reduce((s, c) => s + c.factures.length, 0)} factures · ${eur(tot(actifs))}</b>
       <span>Clients exclus (« ne pas relancer »)</span><b>${R.clients.length - actifs.length}</b>
@@ -829,7 +901,13 @@ window.A = {
   filtre: (k, v) => { FILT[k] = v; renderBody(); },
   pick: (id, on) => { if (on) PICK.add(id); else { PICK.delete(id); delete OVR[id]; } renderBody(); },
   choisir, montant, validerUne, refuserBox, annulerBox, impMontant, imputerBox, emailBox,
-  actualiserRelances, exclureBox, reintegrer, revoquer,
+  actualiserRelances, exclureBox, reintegrer, revoquer, enregistrerModele, validerModele,
+  vueRelances: async (v) => {
+    S.vueRelances = v; renderBody();
+    if (v === 'textes') { try { await chargerModeles(); } catch (e) { toast(`Textes non chargés : ${e.message}`); } renderBody(); }
+  },
+  apercuClient: (cle) => { S.apercuClient = cle; for (const m of S.modeles || []) $(`#ap-${m.code}`).innerHTML = apercu(m); },
+  apercuMaj: (code) => { const m = S.modeles.find((x) => x.code === code); $(`#ap-${code}`).innerHTML = apercu(m); },
   vu: (id) => refuser([id], ''),
   remettre,
   fermer: closeM,

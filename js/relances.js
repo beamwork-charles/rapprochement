@@ -44,6 +44,41 @@ export function ajouterOuvres(d, n) { while (n > 0) { d = ajouterJours(d, 1); if
 /** Jours ouvrés écoulés strictement après a jusqu'à b inclus. */
 export function ouvresEntre(a, b) { let n = 0; for (let d = ajouterJours(a, 1); d <= b; d = ajouterJours(d, 1)) if (estOuvre(d)) n++; return n; }
 
+// ---------------------------------------------------------------------------- textes
+export const SIGNATURE = 'Patrick Bellaiche\nThe Bureau\npatrick.bellaiche@thebureau.paris';
+export const VARIABLES = ['client', 'factures', 'total', 'date_limite', 'historique', 'trame', 'signature'];
+const eurTexte = (x) => {
+  const [e, d] = Math.abs(x).toFixed(2).split('.');
+  return (x < 0 ? '-' : '') + e.replace(/\B(?=(\d{3})+(?!\d))/g, ' ') + ',' + d + ' €';
+};
+const dateTexte = (d) => `${d.slice(8, 10)}/${d.slice(5, 7)}/${d.slice(0, 4)}`;
+const dateLongue = (d) => new Intl.DateTimeFormat('fr-FR', { timeZone: 'UTC', weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }).format(new Date(d + 'T00:00:00Z'));
+
+/**
+ * Variables d'un email de relance pour un client.
+ * @param client      entrée de calendrier().clients
+ * @param dateEnvoi   date d'envoi (AAAA-MM-JJ) ; le délai du niveau 4 court sur 3 jours ouvrés
+ * @param historique  [{ niveau, date }] relances déjà envoyées
+ * @param trame       corps du modèle « ultime »
+ */
+export function variablesRelance(client, dateEnvoi, historique = [], trame = '') {
+  return {
+    client: client.client,
+    factures: client.factures.map((f) => `• ${f.ref} · ${f.site} · échéance ${dateTexte(f.echeance)} · reste dû ${eurTexte(f.reste)}`).join('\n'),
+    total: eurTexte(client.total),
+    date_limite: dateLongue(ajouterOuvres(dateEnvoi, 3)),
+    historique: historique.length ? historique.map((h) => `• Niveau ${h.niveau} envoyé le ${dateTexte(h.date)}`).join('\n') : '• aucune relance enregistrée',
+    trame,
+    signature: SIGNATURE,
+  };
+}
+/** Remplace les {variables} ; une variable inconnue est laissée telle quelle pour être repérée à la relecture. */
+export function rendreModele(texte, vars) {
+  return String(texte).replace(/\{([a-z_]+)\}/g, (m, k) => (k in vars ? vars[k] : m));
+}
+/** Code du modèle à utiliser pour un niveau donné. */
+export const modelePour = (niveau, particulier) => (niveau === 4 && particulier ? 'niveau4_particulier' : niveau === 5 ? 'alerte5' : `niveau${niveau}`);
+
 /** Niveau que justifierait le seul retard (sans tenir compte des relances déjà faites) — sert au constat. */
 export function niveauSelonRetard(echeance, aujourdhui) {
   const j4 = ajouterJours(echeance, DECALAGE[4]);
