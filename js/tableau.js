@@ -3,7 +3,7 @@
 // navigateur), ou session d'un compte autorisé de l'outil de pointage (sans mot de passe).
 // Toutes les données passent par la fonction « tableau » ; aucune clé ni donnée dans cette page.
 
-import { calculer, BATIMENTS, CATEGORIES, HORIZON_JOURS, REGLE_OCC, revalorisations, ajouterMois, ajouterJours, PREAVIS_JOURS, codes } from './occupation.js?v=20261127-9';
+import { calculer, BATIMENTS, CATEGORIES, HORIZON_JOURS, REGLE_OCC, revalorisations, ajouterMois, ajouterJours, PREAVIS_JOURS, codes } from './occupation.js?v=20261127-10';
 
 const C = window.CONFIG || {};
 const $ = (s) => document.querySelector(s);

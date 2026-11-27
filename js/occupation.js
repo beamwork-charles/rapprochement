@@ -13,7 +13,10 @@ export const CATEGORIES = [
   ['parking', 'Parking'], ['domiciliation', 'Domiciliation'], ['autres', 'Autres abonnements'],
 ];
 export const HORIZON_JOURS = 90; // « à venir » : départs et arrivées dans les 90 jours
-export const REGLE_OCC = 2; // version de la règle des statuts (2 : celle de la feuille DATA du classeur, 27/11/2026) ; un instantané plus ancien est recalculé
+export const REGLE_OCC = 3; // version du calcul (2 : statuts de la feuille DATA du classeur ; 3 : espaces hors bureaux exclus, 27/11/2026) ; un instantané plus ancien est recalculé
+/** Espaces « office » d'Archie qui ne sont pas des bureaux à louer (absents du classeur « TB - The Bureau ») : exclus de l'occupation.
+ *  A304 : Boardroom (salle de réunion) ; A000 : rez-de-chaussée de TB1 ; C215 : salle de réunion ; D400 : 4e étage de TB4 entier, déjà compté bureau par bureau. */
+export const HORS_BUREAUX = { TB1: ['A304', 'A000'], TB3: ['C215'], TB4: ['D400'] };
 
 const norm = (s) => String(s ?? '').toUpperCase().replace(/\s+/g, '');
 const arrondi = (x) => Math.round(x * 100) / 100;
@@ -58,8 +61,9 @@ export function calculer(D, aujourdhui) {
   const horizon = ajouterJours(aujourdhui, HORIZON_JOURS);
   const mois = aujourdhui.slice(0, 7);
   const espaces = new Map(D.espaces.map((e) => [e.uuid, e]));
-  // bureaux : espaces « office » d'Archie, hors postes de co-résident (comptés avec les co-résidents)
-  const bureaux = D.espaces.filter((e) => e.categorie === 'office' && !e.archive && !/^co-?r[ée]sident/i.test(e.nom));
+  // bureaux : espaces « office » d'Archie, hors postes de co-résident (comptés avec les co-résidents) et hors salles ou étages entiers (HORS_BUREAUX)
+  const exclus = new Set(BATIMENTS.flatMap((B) => (HORS_BUREAUX[B.code] || []).map((n) => B.space + '|' + norm(n))));
+  const bureaux = D.espaces.filter((e) => e.categorie === 'office' && !e.archive && !/^co-?r[ée]sident/i.test(e.nom) && !exclus.has(e.space + '|' + norm(e.nom)));
   // bureaux par bâtiment et par nom normalisé (« B505 - B506 » → « B505-B506 »)
   const parNom = new Map(bureaux.map((b) => [b.space + '|' + norm(b.nom), b]));
   const prixForfait = new Map(D.forfaits.filter((f) => f.prix != null).map((f) => [f.space + '|' + norm(f.nom), f.prix]));
@@ -77,7 +81,7 @@ export function calculer(D, aujourdhui) {
 
   /** Bureaux d'un abonnement : espaces rattachés dans Archie, sinon codes lus dans le nom du forfait. */
   function bureauxDe(a) {
-    const z = a.zones.map((u) => espaces.get(u)).filter((e) => e && e.categorie === 'office' && !e.archive);
+    const z = a.zones.map((u) => espaces.get(u)).filter((e) => e && e.categorie === 'office' && !e.archive && !exclus.has(e.space + '|' + norm(e.nom)));
     if (z.length) return z;
     // par le nom : seulement les forfaits de bureau (« Résident A301 », « Plateau A110 »), pas « Fontaine à eau A110 »
     if (a.type !== 'plan' || !/^\s*(r[ée]sident|plateau|bureau)\b/i.test(a.nom) || /co-?r[ée]s/i.test(a.nom)) return [];
