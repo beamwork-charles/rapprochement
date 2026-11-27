@@ -1,9 +1,9 @@
 // Écran « Pointage » : connexion, dépôt du relevé, analyse (moteur dans le navigateur), validation vers Archie.
 // Portage de src_reference/ui/index.html + server.py sur Supabase.
-import { lireReleve } from './releve.js?v=20261127-4';
-import * as E from './engine.js?v=20261127-4';
-import * as RL from './relances.js?v=20261127-4';
-import * as D from './relances-donnees.js?v=20261127-4';
+import { lireReleve } from './releve.js?v=20261127-5';
+import * as E from './engine.js?v=20261127-5';
+import * as RL from './relances.js?v=20261127-5';
+import * as D from './relances-donnees.js?v=20261127-5';
 
 const C = window.CONFIG || {};
 const XLSX = window.XLSX;
@@ -330,15 +330,6 @@ function changerLien(id) {
       await lienSuiviBox();
       toast('Nouveau lien créé : l\'ancien ne fonctionne plus');
     });
-}
-
-/** Explication de l'écart entre le virement et le montant pointé (affichée avant validation). */
-function texteEcart(credit, tot) {
-  const d = Math.round((credit - tot) * 100) / 100;
-  if (d < -0.005) return `<div class="warn">Le montant pointé dépasse le virement de ${eur(-d)} : l'envoi sera refusé.</div>`;
-  if (d >= SEUIL_ECART) return `<p class="sub">Trop-perçu de <b>${eur(d)}</b> : enregistré comme avance du client (note sur le paiement et sur sa fiche Archie), proposé sur sa prochaine facture. Un email d'information est préparé, il n'est pas envoyé.</p>`;
-  if (d >= 0.01) return `<p class="sub">Écart de ${eur(d)} (moins de ${SEUIL_ECART} €) : aucun message au client, régularisation par la comptabilité.</p>`;
-  return '';
 }
 
 /** Lit toutes les lignes d'une requête (l'API limite à 1000 lignes par appel). */
@@ -840,11 +831,14 @@ function validerSel() {
   if (S.sending || refusLectureSeule()) return;
   const L = S.lines.filter((l) => SEL.has(l.id) && l.tab === 'pret' && !isOk(l) && !isBusy(l) && (l.props || []).length);
   if (!L.length) return;
+  const items = L.map((l) => ({ id: l.id, props: l.props.map((p) => ({ uuid: p.uuid, space: p.space, montant: p.montant })) }));
+  // une seule ligne cochée = pointage individuel : pas de fenêtre de confirmation (elle reste pour une liste)
+  if (L.length === 1) { envoyer(items); return; }
   const nbp = L.reduce((x, l) => x + l.props.length, 0);
   confirmBox('Enregistrer dans Archie ?',
     `<div class="kv"><span>Virements</span><b>${L.length}</b><span>Paiements à créer</span><b>${nbp}</b><span>Montant total</span><b>${eur(L.reduce((x, l) => x + l.credit, 0))}</b><span>Date du paiement</span><b>date de valeur bancaire</b><span>Mode</span><b>Virement bancaire</b><span>Email au client</span><b>Non</b><span>Validé par</span><b>${esc(NOM)}</b></div>
      <p class="sub">Une fois enregistré, un paiement ne peut être annulé que dans Archie.</p>`,
-    'Enregistrer', () => envoyer(L.map((l) => ({ id: l.id, props: l.props.map((p) => ({ uuid: p.uuid, space: p.space, montant: p.montant })) }))));
+    'Enregistrer', () => envoyer(items));
 }
 // ---- bandeau « écriture en cours » : ne pas fermer ni rafraîchir, avec le temps restant estimé
 let TRAVAIL = null, minuteurTravail = null;
@@ -924,7 +918,7 @@ function verifView() {
       h += `<tr class="${isOk(l) ? 'ok' : isErr(l) ? 'err' : ''}"><td><span class="badge b-${k}">${esc(l.probleme)}</span></td>
         <td class="date">${dfr(l.date)}</td><td class="num strong">${eur(l.credit)}</td>
         <td><div class="lib" title="${esc(l.texte)}">${esc(l.texte)}</div><div class="expl">${esc(l.detail)}${esc(petitEcart(l))}</div><div class="sub">${esc(l.banque)}</div>${isErr(l) ? `<div class="errmsg">${esc(act(l).message)}</div>` : ''}${isOk(l) && act(l).avance ? `<div class="expl">Avance de ${eur(act(l).avance.montant)} enregistrée${act(l).avertissement ? ' — ' + esc(act(l).avertissement) : ''}</div>` : ''}</td>
-        <td class="propcell">${proposition(l)}</td>
+        <td class="propcell">${proposition(l)}${noteEcart(l)}</td>
         <td class="num">${isOk(l) ? `<span class="done"><i></i>Pointé</span>` : isBusy(l) ? '<span class="spin"></span>' : `<div class="acts"><button class="btn sm danger" onclick="A.refuserBox(['${l.id}'],'cette ligne')" ${S.sending ? 'disabled' : ''}>Refuser</button><button class="btn sm primary" onclick="A.validerUne('${l.id}')" ${propsFor(l).length && !ecritureImpossible() ? '' : 'disabled'}>Valider</button></div>`}</td></tr>`;
     }
     h += `</tbody></table>`;
@@ -1045,16 +1039,27 @@ function montant(id, val) {
   if (v > 0) o.montant = v; else toast('Montant non compris : écrivez-le sous la forme 1234,56');
   renderBody();
 }
+/**
+ * Pointage d'UNE ligne : le clic sur « Valider » suffit, sans fenêtre de confirmation (demande de Charles, 27/11/2026).
+ * La fenêtre reste pour une sélection de plusieurs lignes (validerSel). Ce que le pointage va faire d'un écart est
+ * indiqué sur la ligne elle-même, avant le clic (noteEcart).
+ */
 function validerUne(id) {
   if (S.sending || refusLectureSeule()) return;
   const l = S.lines.find((x) => x.id === id); if (!l) return;
   const P = propsFor(l).filter((p) => p.montant > 0);
   if (!P.length) return;
-  const tot = P.reduce((x, p) => x + p.montant, 0);
-  confirmBox('Pointer ce virement ?',
-    `<div class="kv"><span>Virement</span><b>${eur(l.credit)} du ${dfr(l.date)}</b>${P.map((p) => `<span>${esc(p.ref)}</span><b>${eur(p.montant)} · ${esc(p.client || '')}</b>`).join('')}<span>Total pointé</span><b>${eur(tot)}</b><span>Email au client</span><b>Non</b></div>
-     ${texteEcart(l.credit, tot)}`,
-    'Enregistrer', () => envoyer([{ id, props: P.map((p) => ({ uuid: p.uuid, space: p.space, montant: p.montant })) }]));
+  envoyer([{ id, props: P.map((p) => ({ uuid: p.uuid, space: p.space, montant: p.montant })) }]);
+}
+/** Ce qu'il adviendra de la différence entre le virement et le montant proposé (affiché sous la proposition). */
+function noteEcart(l) {
+  const P = propsFor(l).filter((p) => p.montant > 0);
+  if (!P.length || isOk(l) || isBusy(l)) return '';
+  const d = Math.round((resteAAffecter(l) - P.reduce((x, p) => x + p.montant, 0)) * 100) / 100;
+  if (d < -0.05) return `<div class="errmsg">Dépasse le virement de ${eur(-d)} : le pointage sera refusé.</div>`;
+  if (d >= SEUIL_ECART) return `<div class="sub">Trop-perçu de <b>${eur(d)}</b> : sera enregistré comme avance du client.</div>`;
+  if (Math.abs(d) >= 0.01) return `<div class="sub">Écart de ${eur(d)} : régularisation comptable, aucun message au client.</div>`;
+  return '';
 }
 
 /* ---- Mis de côté */
