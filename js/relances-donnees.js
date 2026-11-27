@@ -1,6 +1,6 @@
 // Données du calendrier des relances, communes à l'écran principal et à la page de suivi « niveau 5 ».
 // Le calcul lui-même est dans relances.js (même règle partout).
-import * as RL from './relances.js?v=20261127-8';
+import * as RL from './relances.js?v=20261127-9';
 
 export const SPACES = ['16-cours-albert-1er', '25-rue-du-4-septembre', '28-cours-albert-1er', '42-rue-notre-dame-des-victoires'];
 const dateParis = (q) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Paris', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(q));
@@ -59,9 +59,10 @@ export async function contexte(sb) {
   };
 }
 
-/** Calendrier complet à partir des factures ouvertes. */
-export function calculer(factures, ctx, calcule_le = new Date()) {
-  const R = RL.calendrier(factures, ctx.envoyees, ctx.exclus, new Date(), ctx.pasAvant);
+/** Calendrier complet à partir des factures ouvertes (et des avoirs encore disponibles, signalés par client). */
+export function calculer(factures, ctx, calcule_le = new Date(), avoirs = []) {
+  const R = RL.calendrier(factures, ctx.envoyees, ctx.exclus, new Date(), ctx.pasAvant, avoirs);
+  R.avoirs = avoirs;
   R.pasAvant = ctx.pasAvant && ctx.pasAvant > R.aujourdhui ? ctx.pasAvant : null;
   R.dernierReleve = ctx.dernierReleve;
   R.suspendues = !R.dernierReleve || RL.ouvresEntre(R.dernierReleve, R.aujourdhui) > 2;
@@ -81,6 +82,7 @@ export async function enregistrer(sb, R) {
     niveau_atteint: f.niveau_atteint, niveau_selon_retard: f.niveau_retard,
     prochain_niveau: c.exclu ? null : c.prochain_niveau, prochaine_date: c.exclu ? null : c.prochaine_date,
     manager: f.manager || null, manager_email: f.manager_email || null, contacts: f.contacts || [], rappels_archie: f.rappels_archie || [],
+    avoirs: c.avoirs || [], // avoirs disponibles du client (répétés sur chacune de ses factures)
   })));
   const { error } = await sb.rpc('remplacer_relances_suivi', { lignes });
   if (error) throw new Error(error.message);
@@ -92,8 +94,11 @@ export async function lireEnregistre(sb) {
   const vues = new Map();
   for (const r of rows) vues.set(r.facture_uuid, r); // par sécurité : une seule ligne par facture
   const lignes = [...vues.values()];
+  const avoirs = new Map();
+  for (const r of lignes) for (const a of r.avoirs || []) avoirs.set(a.uuid, { ...a, reste: Number(a.reste) });
   return {
     calcule_le: lignes.length ? new Date(lignes.map((r) => r.calcule_le).sort().pop()) : null,
+    avoirs: [...avoirs.values()],
     factures: lignes.map((r) => ({
       uuid: r.facture_uuid, ref: r.facture_ref, space: r.space, site: r.site, client: r.client, group_uuid: r.group_uuid,
       state: 'open', reste: Number(r.reste), echeance: r.echeance, type: r.particulier ? 'user' : 'group',
@@ -126,3 +131,15 @@ export async function lireOuvertes(appel, progression = () => {}) {
   memo.ecrire('sec_par_lot_ouvertes', ((Date.now() - debut) / 1000 / Math.max(1, lots)).toFixed(2));
   return parBatiment.flat();
 }
+
+/** Avoirs encore disponibles dans Archie, pour un bâtiment (lecture seule). */
+export async function lireAvoirs(appel, space, unLot = () => {}) {
+  const out = []; let curseur = null;
+  do {
+    const r = await appel('archie-donnees', { space, quoi: 'avoirs', curseur });
+    out.push(...r.items); curseur = r.curseur; unLot();
+  } while (curseur);
+  return out;
+}
+/** Avoirs disponibles des 4 bâtiments (en parallèle). */
+export const lireTousAvoirs = async (appel) => (await Promise.all(SPACES.map((s) => lireAvoirs(appel, s)))).flat();

@@ -3,8 +3,8 @@
 // Deux façons d'y accéder :
 //   • par lien (…/suivi.html#cle=…) : aucune connexion ; la fonction « suivi » vérifie la clé et ne renvoie que le niveau 5 ;
 //   • connecté avec un compte @thebureau.paris.
-import * as D from './relances-donnees.js?v=20261127-8';
-import * as RL from './relances.js?v=20261127-8';
+import * as D from './relances-donnees.js?v=20261127-9';
+import * as RL from './relances.js?v=20261127-9';
 
 const C = window.CONFIG || {};
 const $ = (s) => document.querySelector(s);
@@ -138,7 +138,8 @@ function rendu() {
   const tous = R.clients;
   h += `<div class="resume"><div><div class="n">${tous.length}</div><div class="l">clients au niveau 5</div></div>
     <div><div class="n">${eur0(tous.reduce((s, c) => s + c.total, 0))}</div><div class="l">restant dû</div></div>
-    <div><div class="n">${tous.reduce((s, c) => s + c.factures.length, 0)}</div><div class="l">factures</div></div></div>
+    <div><div class="n">${tous.reduce((s, c) => s + c.factures.length, 0)}</div><div class="l">factures</div></div>
+    ${tous.some((c) => c.avoirs?.length) ? `<div><div class="n">${tous.filter((c) => c.avoirs?.length).length}</div><div class="l">avec un avoir disponible</div></div>` : ''}</div>
     <div class="outils"><input class="search" id="q" placeholder="Rechercher un client, un email, une facture…" value="${esc(Q)}">
     <span class="tri" id="tri"></span></div>
     <table><thead><tr><th>Retard</th><th>Client</th><th class="num">Relances</th><th>Contact</th><th class="num">Montant dû</th></tr></thead><tbody id="corps"></tbody></table><div style="height:60px"></div>`;
@@ -166,7 +167,11 @@ function ligne(c, R) {
   const depuis = Math.max(0, RL.ecartJours(R.aujourdhui, c.date_niveau5));
   const classe = c.retard_max >= 60 ? 'max' : c.retard_max >= 30 ? 'fort' : '';
   const derniere = c.relances.length ? c.relances[c.relances.length - 1] : null;
-  const emails = [c.manager_email, ...c.contacts].filter(Boolean);
+  // contacts de facturation (destinataires des relances), puis le responsable s'il n'en fait pas partie
+  const emails = (c.contacts || []).map((e) => [e, '']);
+  if (c.manager_email && !(c.contacts || []).includes(c.manager_email)) emails.push([c.manager_email, 'responsable']);
+  const avoir = c.avoirs?.length
+    ? `<div class="avoir ${c.couverture === 'totale' ? 'tout' : ''}">Avoir disponible ${eur(c.total_avoirs)}<div class="sub">${c.couverture === 'totale' ? 'solde tout l\'impayé' : c.couverture === 'partielle' ? `peut solder ${eur(c.avoirs_imputables)}` : 'autre société'} · ${c.avoirs.map((a) => esc(a.ref || 'avoir')).join(', ')}</div></div>` : '';
   const facs = c.factures.map((f) => `<li>${esc(f.ref)} · ${esc(f.site)} · échéance ${dfr(f.echeance)} · ${eur(f.reste)}</li>`).join('');
   return `<tr>
     <td data-l="Retard" class="c-retard"><span class="compteur ${classe}"><span class="v">${c.retard_max}</span> j</span>
@@ -175,8 +180,8 @@ function ligne(c, R) {
       <details data-c="${esc(c.client)}" ${OUVERTS.has(c.client) ? 'open' : ''}><summary>${c.factures.length} facture${c.factures.length > 1 ? 's' : ''} · ${esc(c.sites.join(' + '))}</summary><ul>${facs}</ul></details></td>
     <td data-l="Relances" class="num relances c-rel"><div class="v">${c.relances.length}</div><div class="sub">${derniere ? `dernière le ${dfr(derniere)}` : 'aucune'}</div></td>
     <td data-l="Contact" class="contact c-contact">${c.manager ? `<div>${esc(c.manager)}</div>` : ''}
-      ${emails.map((e) => `<div><a href="mailto:${esc(e)}">${esc(e)}</a></div>`).join('') || '<span class="sub">aucun email dans Archie</span>'}</td>
-    <td data-l="Montant dû" class="num c-montant"><div class="montant">${eur(c.total)}</div></td>
+      ${emails.map(([e, role]) => `<div><a href="mailto:${esc(e)}">${esc(e)}</a>${role ? ` <span class="sub">(${role})</span>` : ''}</div>`).join('') || '<span class="sub">aucun email dans Archie</span>'}</td>
+    <td data-l="Montant dû" class="num c-montant"><div class="montant">${eur(c.total)}</div>${avoir}</td>
   </tr>`;
 }
 

@@ -8,6 +8,8 @@
 
 export const DEBUT_PERIMETRE = '2026-09-01';
 export const RESTE_MINIMUM = 5;
+/** Société qui facture : le 42 rue ND des Victoires est une société distincte des trois autres bâtiments. */
+export const societeDe = (space) => (space === '42-rue-notre-dame-des-victoires' ? '42' : 'the-bureau');
 export const DECALAGE = { 1: 0, 2: 7, 3: 10, 4: 14 }; // jours calendaires après l'échéance
 export const LIBELLE_NIVEAU = { 1: 'Rappel courtois', 2: 'Relance simple', 3: 'Relance ferme', 4: 'Avertissement frais 40 €', 5: 'Opérationnels (ultime relance)' };
 
@@ -134,8 +136,9 @@ export const dateNiveau5 = (echeance) => ajouterOuvres(ajouterJours(echeance, DE
  *                   et pour le suivi : manager, manager_email, contacts, rappels_archie)
  * @param envoyees   relances déjà faites : [{ group_uuid, niveau, date, factures: [uuid] }]
  * @param exclus     { group_uuid: { motif } } (liste « ne pas relancer »)
+ * @param avoirs     avoirs Archie encore disponibles : [{ uuid, ref, space, site, group_uuid, client, reste, date, origine }]
  */
-export function calendrier(factures, envoyees, exclus, maintenant = new Date(), pasAvant = null) {
+export function calendrier(factures, envoyees, exclus, maintenant = new Date(), pasAvant = null, avoirs = []) {
   const premier = premierCreneau(maintenant);
   const aujourdhui = premier.aujourdhui;
   // verrou « aucun envoi avant le … » (paramètre relances_pas_avant) : le premier créneau ne peut pas être plus tôt
@@ -190,7 +193,21 @@ export function calendrier(factures, envoyees, exclus, maintenant = new Date(), 
     const lisible = (e) => e && !e.includes('*'); // Archie masque l'email du responsable (« a******@… ») : inutilisable
     c.manager = c.factures.map((f) => f.manager).find(Boolean) || '';
     c.manager_email = c.factures.map((f) => f.manager_email).find(lisible) || '';
-    c.contacts = [...new Set(c.factures.flatMap((f) => f.contacts || []))].filter((e) => lisible(e) && e !== c.manager_email);
+    // Destinataires des relances = contacts de FACTURATION uniquement (adresses « recipients » de la facture et destinataires
+    // de facturation du client dans Archie) — jamais les autres membres de la société. Le responsable n'en fait partie que
+    // s'il figure lui-même parmi ces adresses ; sinon il est seulement affiché (manager_email), sans recevoir de relance.
+    c.contacts = [...new Set(c.factures.flatMap((f) => f.contacts || []))].filter(lisible);
+    // Avoirs encore disponibles pour ce client (tous bâtiments) ; seuls ceux de la même société que les factures peuvent les solder.
+    c.avoirs = c.group_uuid ? avoirs.filter((a) => a.group_uuid === c.group_uuid && a.reste > 0.005).sort((a, b) => (a.date || '').localeCompare(b.date || '')) : [];
+    c.total_avoirs = Math.round(c.avoirs.reduce((s, a) => s + a.reste, 0) * 100) / 100;
+    let couvert = 0;
+    for (const soc of new Set(c.factures.map((f) => societeDe(f.space)))) {
+      const du = c.factures.filter((f) => societeDe(f.space) === soc).reduce((s, f) => s + f.reste, 0);
+      const dispo = c.avoirs.filter((a) => societeDe(a.space) === soc).reduce((s, a) => s + a.reste, 0);
+      couvert += Math.min(du, dispo);
+    }
+    c.avoirs_imputables = Math.round(couvert * 100) / 100;
+    c.couverture = c.avoirs_imputables >= c.total - 0.01 && c.total > 0 ? 'totale' : c.avoirs_imputables > 0.005 ? 'partielle' : null;
     const uuids = new Set(c.factures.map((f) => f.uuid));
     const jours = new Set(c.factures.flatMap((f) => f.rappels_archie || []));
     for (const r of envoyees) if ((r.factures || []).some((u) => uuids.has(u))) jours.add(r.date);

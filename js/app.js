@@ -1,9 +1,9 @@
 // Écran « Pointage » : connexion, dépôt du relevé, analyse (moteur dans le navigateur), validation vers Archie.
 // Portage de src_reference/ui/index.html + server.py sur Supabase.
-import { lireReleve } from './releve.js?v=20261127-8';
-import * as E from './engine.js?v=20261127-8';
-import * as RL from './relances.js?v=20261127-8';
-import * as D from './relances-donnees.js?v=20261127-8';
+import { lireReleve } from './releve.js?v=20261127-9';
+import * as E from './engine.js?v=20261127-9';
+import * as RL from './relances.js?v=20261127-9';
+import * as D from './relances-donnees.js?v=20261127-9';
 
 const C = window.CONFIG || {};
 const XLSX = window.XLSX;
@@ -72,7 +72,9 @@ async function lireBatiment(space, sinceInv, sincePay, unLot) {
       unLot();
     } while (curseur);
   }
-  return { space, site, compte_virement, compte_trop_percu, inv, pay };
+  // avoirs encore disponibles (indication pour les relances) : une lecture en échec n'empêche pas le pointage
+  const avoirs = await D.lireAvoirs(appelFonction, space, unLot).catch((e) => { console.warn(`Avoirs non lus (${space}) :`, e.message); return null; });
+  return { space, site, compte_virement, compte_trop_percu, inv, pay, avoirs };
 }
 
 // ============================================================================ écarts et avances
@@ -89,10 +91,11 @@ function facturesPour(a) {
     .sort((x, y) => (x.date || '').localeCompare(y.date || ''));
 }
 // ============================================================================ relances (lecture seule)
-async function calculerRelances(factures) {
-  const R = D.calculer(factures, await D.contexte(sb));
+async function calculerRelances(factures, avoirs = S.avoirs || []) {
+  const R = D.calculer(factures, await D.contexte(sb), new Date(), avoirs);
   S.relances = R;
   S.facturesOuvertes = factures;
+  S.avoirs = avoirs;
   // mémorisé pour l'export Excel et la page de suivi (remplace le précédent)
   D.enregistrer(sb, R).catch((e) => console.warn('Relances non enregistrées :', e.message));
 }
@@ -102,16 +105,45 @@ async function actualiserRelances() {
   if (!etat || etat.relancesEnCours || etat.archieEnCours) return; // une seule relecture à la fois
   etat.relancesEnCours = true; etat.relancesProgression = "Lecture d'Archie…"; renderBody();
   try {
-    const factures = await D.lireOuvertes(appelFonction, (texte) => {
-      etat.relancesProgression = texte;
-      const b = $('#b-act-rel'); if (b && S === etat) b.textContent = texte;
-    });
-    if (S === etat) { await calculerRelances(factures); toast('Relances actualisées'); }
+    const [factures, avoirs] = await Promise.all([
+      D.lireOuvertes(appelFonction, (texte) => {
+        etat.relancesProgression = texte;
+        const b = $('#b-act-rel'); if (b && S === etat) b.textContent = texte;
+      }),
+      D.lireTousAvoirs(appelFonction).catch(() => etat.avoirs || []), // à défaut : derniers avoirs connus
+    ]);
+    if (S === etat) { await calculerRelances(factures, avoirs); toast('Relances actualisées'); }
   } catch (e) { toast(`Actualisation impossible : ${e.message}`); }
   etat.relancesEnCours = false;
   if (S === etat) renduSansCouperLaSaisie();
 }
 const NIV = (n) => (n ? `Niveau ${n} · ${RL.LIBELLE_NIVEAU[n]}` : '—');
+/**
+ * Factures réglées depuis l'outil (pointage, imputation d'avance) : retirées tout de suite du calendrier des relances
+ * — et donc de la page de suivi, qui lit le calendrier enregistré — sans attendre la prochaine lecture d'Archie.
+ */
+async function deduireDesRelances(etat, paiements) {
+  if (!etat.facturesOuvertes || !paiements.length) return;
+  let change = false;
+  for (const p of paiements) {
+    const f = etat.facturesOuvertes.find((x) => x.uuid === p.uuid);
+    if (!f) continue;
+    f.reste = Math.round((f.reste - Number(p.montant || 0)) * 100) / 100;
+    if (f.reste <= 0.005) f.state = 'paid';
+    change = true;
+  }
+  if (!change || S !== etat) return;
+  try { await calculerRelances(etat.facturesOuvertes.filter((f) => f.state !== 'paid')); } catch (e) { console.warn('Relances non recalculées :', e.message); }
+}
+/** Avoirs Archie disponibles pour un client en retard (indication : à imputer dans Archie avant de relancer). */
+function avoirClient(c) {
+  if (!c.avoirs?.length) return '';
+  const refs = c.avoirs.map((a) => `${a.ref || 'avoir'} (${a.site}, ${eur(a.reste)})`).join(', ');
+  const portee = c.couverture === 'totale' ? 'suffit à solder tout l\'impayé'
+    : c.couverture === 'partielle' ? `peut solder ${eur(c.avoirs_imputables)} sur ${eur(c.total)}`
+    : 'émis par une autre société : ne peut pas solder ces factures';
+  return `<div class="avoir ${c.couverture === 'totale' ? 'tout' : ''}" title="${esc(refs)}">Avoir disponible : <b>${eur(c.total_avoirs)}</b> — ${portee}<div class="sub">${esc(refs)}</div></div>`;
+}
 
 // ---- textes des relances (à valider avant tout envoi)
 async function chargerModeles() {
@@ -201,6 +233,7 @@ function relancesView() {
     <div class="modal" style="width:auto;max-width:none;box-shadow:none;border:1px solid var(--line);padding:16px 20px"><div class="kv" style="grid-template-columns:260px 1fr;margin:0">
       <span>Clients à relancer</span><b>${actifs.length} · ${actifs.reduce((s, c) => s + c.factures.length, 0)} factures · ${eur(tot(actifs))}</b>
       <span>Clients exclus (« ne pas relancer »)</span><b>${R.clients.length - actifs.length}</b>
+      ${(() => { const A = actifs.filter((c) => c.avoirs?.length); return A.length ? `<span>Clients ayant un avoir disponible</span><b>${A.length} · ${eur(A.reduce((s, c) => s + c.total_avoirs, 0))} d'avoirs · ${A.filter((c) => c.couverture === 'totale').length} dont l'impayé est entièrement couvert</b>` : ''; })()}
       <span>Prochain envoi possible</span><b>${dfr(R.creneau)} à 8 h · ${prochains.length} client(s)</b>
       ${parRetard.map(([n, k, m]) => `<span>Selon le retard : ${NIV(n)}</span><b>${k} facture(s) · ${eur(m)}</b>`).join('')}
       <span>Hors périmètre (échues avant le ${dfr(RL.DEBUT_PERIMETRE)})</span><b>${R.hors.factures} facture(s) · ${eur(R.hors.total)}</b>
@@ -212,7 +245,8 @@ function relancesView() {
   if (!L.length) h += `<tr><td colspan="7" class="empty">Aucune facture en retard.</td></tr>`;
   for (const c of L) {
     const facs = c.factures.slice(0, 6).map((f) => `<div><span class="ref">${esc(f.ref)}</span> · ${esc(f.site)} · éch. ${dfr(f.echeance)} · ${eur(f.reste)}</div>`).join('') + (c.factures.length > 6 ? `<div class="sub">+ ${c.factures.length - 6} autre(s)</div>` : '');
-    h += `<tr class="${c.exclu ? 'err' : ''}"><td><div class="strong">${esc(c.client)}</div>${c.particulier ? '<span class="badge b-part">Particulier : pas de frais de 40 €</span> ' : ''}${c.exclu ? `<span class="badge b-refus">Exclu${c.exclu.motif ? ' : ' + esc(c.exclu.motif) : ''}</span>` : ''}</td>
+    h += `<tr class="${c.exclu ? 'err' : ''}"><td><div class="strong">${esc(c.client)}</div>${c.particulier ? '<span class="badge b-part">Particulier : pas de frais de 40 €</span> ' : ''}${c.exclu ? `<span class="badge b-refus">Exclu${c.exclu.motif ? ' : ' + esc(c.exclu.motif) : ''}</span>` : ''}${avoirClient(c)}
+        ${c.contacts?.length ? `<div class="sub" title="Contacts de facturation Archie : seuls destinataires des relances">✉ ${esc(c.contacts.join(', '))}</div>` : '<div class="sub">aucun contact de facturation dans Archie</div>'}</td>
       <td class="facs">${facs}</td><td class="num strong">${eur(c.total)}</td><td class="num">${c.retard_max} j</td>
       <td>${c.niveau_atteint ? esc(NIV(c.niveau_atteint)) : '<span class="sub">aucune relance</span>'}</td>
       <td>${c.exclu ? '<span class="sub">aucune (exclu)</span>' : c.prochaine_date ? `<span class="badge b-niv">${esc(NIV(c.prochain_niveau))}</span><div class="sub">le ${dfr(c.prochaine_date)} à 8 h</div>` : '—'}</td>
@@ -498,7 +532,7 @@ async function afficherAnalyseEnregistree(ops) {
   // dernier calendrier des relances : affiché tout de suite, recalculé à la fin de la relecture d'Archie
   try {
     const [ctx, enr] = await Promise.all([D.contexte(sb), D.lireEnregistre(sb)]);
-    if (enr.factures.length) { S.relances = D.calculer(enr.factures, ctx, enr.calcule_le); S.facturesOuvertes = enr.factures; }
+    if (enr.factures.length) { S.relances = D.calculer(enr.factures, ctx, enr.calcule_le, enr.avoirs); S.facturesOuvertes = enr.factures; S.avoirs = enr.avoirs; }
   } catch (e) { console.warn('Relances enregistrées illisibles :', e.message); }
   S.analyse_le = new Date(S.releve.analyse_le);
   S.enregistree = true;
@@ -575,7 +609,10 @@ async function analyser({ arrierePlan = false } = {}) {
   try {
     try { await chargerAvances(); } catch (e) { S.avances = []; avert.push(`Avances non chargées : ${e.message}`); }
     if (perime()) return;
-    try { await calculerRelances(inv.filter((i) => ['open', 'partially_paid', 'processing_payment'].includes(i.state))); } catch (e) { avert.push(`Relances non calculées : ${e.message}`); }
+    const sansAvoirs = lots.filter((l) => !l.avoirs).map((l) => l.site);
+    if (sansAvoirs.length) avert.push(`Avoirs non lus dans Archie (${sansAvoirs.join(', ')}) : les avoirs disponibles indiqués dans les relances peuvent être incomplets.`);
+    const avoirs = lots.flatMap((l) => l.avoirs || (S.avoirs || []).filter((a) => a.space === l.space));
+    try { await calculerRelances(inv.filter((i) => ['open', 'partially_paid', 'processing_payment'].includes(i.state)), avoirs); } catch (e) { avert.push(`Relances non calculées : ${e.message}`); }
     if (perime()) return;
     const decs = await toutLire(() => sb.from('decisions').select('op_id,refus,motif,annulation_demandee').order('op_id'));
     if (perime()) return;
@@ -669,6 +706,10 @@ async function deposer(fichier) {
     const connus = new Set((enCours?.bank || []).map((l) => l.id));
     const dejaConnues = credits.filter((l) => connus.has(l.id)).length, nouvelles = credits.length - dejaConnues;
     const fin = dates[dates.length - 1];
+    // lignes encore à traiter (prêtes ou à vérifier, non pointées) du relevé en cours qui ne sont PAS dans le nouveau fichier :
+    // elles disparaîtraient de l'écran (le nouveau relevé remplace l'ancien) — à pointer avant, ou dans Archie
+    const nouveauxIds = new Set(credits.map((l) => l.id));
+    const perdues = (enCours?.lines || []).filter((l) => ['pret', 'verif'].includes(l.tab) && !isOk(l) && !nouveauxIds.has(l.id));
     let alerte = '';
     if (enCours && dejaConnues === credits.length && credits.length === connus.size) {
       alerte = `<div class="warn">Ce fichier contient exactement les mêmes encaissements que le relevé en cours (« ${esc(enCours.releve.fichier)} »). Le déposer ne change rien : pour relire Archie, utilisez plutôt « Actualiser ».</div>`;
@@ -679,6 +720,7 @@ async function deposer(fichier) {
       `<div class="kv"><span>Fichier</span><b>${esc(fichier.name)}</b><span>Comptes</span><b>${esc(comptes.join(', '))}</b><span>Encaissements</span><b>${credits.length}</b><span>Total</span><b>${eur(total)}</b><span>Période</span><b>du ${dfr(dates[0])} au ${dfr(fin)}</b>
        ${enCours ? `<span>Déjà dans le relevé en cours</span><b>${dejaConnues} (reconnues : refus, « vu » et pointages conservés)</b><span>Nouvelles</span><b>${nouvelles}</b>` : ''}</div>
        ${alerte}
+       ${perdues.length ? `<div class="warn"><b>${perdues.length} encaissement(s) encore à traiter</b> dans le relevé en cours (${eur(perdues.reduce((s, l) => s + l.credit, 0))}, du ${dfr(perdues.map((l) => l.date).sort()[0])} au ${dfr(perdues.map((l) => l.date).sort().pop())}) ne figurent pas dans ce fichier : ils ne seront plus affichés après le dépôt. Pointez-les avant, ou déposez un export qui couvre aussi cette période.</div>` : ''}
        ${avertissements.map((w) => `<div class="warn">${esc(w)}</div>`).join('')}
        <p class="sub">Le relevé déposé devient le relevé à traiter. Rien n'est envoyé à Archie à cette étape.</p>`,
       'Déposer', async () => {
@@ -896,6 +938,7 @@ async function envoyer(items) {
     travail(null);
     etat.sending = false;
   }
+  await deduireDesRelances(etat, items.filter((i) => etat.actions[i.id]?.resultat === 'ok').flatMap((i) => i.props));
   const avances = items.filter((i) => etat.actions[i.id]?.avance).length;
   if (avances && S === etat) { try { await chargerAvances(); } catch { /* affichée au prochain chargement */ } }
   if (S === etat) { render(); boutons(); }
@@ -991,7 +1034,7 @@ function imputerBox(id) {
         const r = await sb.functions.invoke('imputer', { body: { avance_id: a.id, facture_uuid: i.uuid, space: i.space, montant: m } });
         if (r.error) message = await erreurFonction(r.error); else data = r.data;
       } catch (e) { message = e.message; } finally { travail(null); etat.sending = false; }
-      if (data?.resultat === 'ok') i.reste = Math.round((i.reste - m) * 100) / 100;
+      if (data?.resultat === 'ok') { i.reste = Math.round((i.reste - m) * 100) / 100; await deduireDesRelances(etat, [{ uuid: i.uuid, montant: m }]); }
       // dans tous les cas on relit les avances : une imputation précédente a pu être retrouvée dans Archie
       if (S === etat) { try { await chargerAvances(); } catch (e) { console.warn('Avances non rechargées :', e.message); } render(); remplirFactures(); boutons(); }
       toast(data?.resultat === 'ok' ? `Avance imputée sur ${data.facture_ref} : ${eur(data.montant)}` : `Imputation non faite : ${data?.message || message || 'réponse illisible'}`);
