@@ -248,3 +248,50 @@ function calculerClients(abos, groupes, espaces, aujourdhui) {
   }
   return out.sort((a, b) => b.loyer - a.loyer);
 }
+
+// ------------------------------------------------------------------ revalorisation (lecture seule)
+export const PREAVIS_JOURS = 70; // une hausse à moins de 70 jours doit être annoncée maintenant (préavis de 2 mois)
+export const ajouterMois = (iso, n) => {
+  const [y, m, d] = iso.split('-').map(Number);
+  const t = new Date(Date.UTC(y, m - 1 + n, 1));
+  const fin = new Date(Date.UTC(t.getUTCFullYear(), t.getUTCMonth() + 1, 0)).getUTCDate();
+  return `${t.getUTCFullYear()}-${String(t.getUTCMonth() + 1).padStart(2, '0')}-${String(Math.min(d, fin)).padStart(2, '0')}`;
+};
+const ecart = (a, b) => Math.round((Date.parse(a + 'T12:00:00Z') - Date.parse(b + 'T12:00:00Z')) / 86400000);
+
+/**
+ * Un contrat par ligne, avec son statut de revalorisation d'après la grille de prix d'Archie :
+ *   programmee : une hausse du prix de base est déjà inscrite dans Archie ;
+ *   en_retard  : 12 mois passés depuis la dernière hausse (ou le début du contrat), rien de programmé ;
+ *   a_prevenir : anniversaire dans moins de 70 jours, rien de programmé ;
+ *   a_jour     : prochain anniversaire plus tard ;
+ *   se_termine : le contrat finit avant son prochain anniversaire.
+ * Les hausses obtenues en réduisant la remise ne figurent pas dans la grille et ne sont donc pas vues.
+ */
+export function revalorisations(clients, aujourdhui) {
+  const rows = [];
+  for (const c of clients || []) {
+    for (const a of c.abonnements || []) {
+      if (a.a_venir || !(a.loyer > 0)) continue;
+      const base = a.derniere_hausse || a.debut;
+      let anniv = base ? ajouterMois(base, 12) : null;
+      let statut, retard = null, gain = 0;
+      if (a.prochaine_hausse) {
+        statut = 'programmee'; anniv = a.prochaine_hausse.date;
+        gain = Math.round(a.loyer * a.prochaine_hausse.pct) / 100;
+      } else if (anniv && a.fin && a.fin < anniv) {
+        statut = 'se_termine';
+      } else if (anniv && anniv <= aujourdhui) {
+        statut = 'en_retard'; retard = ecart(aujourdhui, anniv); gain = Math.round(a.loyer * 3) / 100;
+      } else if (anniv && ecart(anniv, aujourdhui) <= PREAVIS_JOURS) {
+        statut = 'a_prevenir'; gain = Math.round(a.loyer * 3) / 100;
+      } else statut = 'a_jour';
+      rows.push({
+        cle: c.cle, client: c.nom, contrat: a.nom, batiment: a.batiment, cat: a.cat, bureaux: a.bureaux,
+        loyer: a.loyer, remise: a.remise, fin_remise: a.fin_remise, debut: a.debut, fin: a.fin,
+        derniere: a.derniere_hausse, prochaine: a.prochaine_hausse, anniversaire: anniv, statut, retard, gain,
+      });
+    }
+  }
+  return rows;
+}

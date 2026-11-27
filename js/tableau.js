@@ -3,7 +3,7 @@
 // navigateur), ou session d'un compte autorisé de l'outil de pointage (sans mot de passe).
 // Toutes les données passent par la fonction « tableau » ; aucune clé ni donnée dans cette page.
 
-import { calculer, BATIMENTS, CATEGORIES, HORIZON_JOURS } from './occupation.js?v=20261127-5';
+import { calculer, BATIMENTS, CATEGORIES, HORIZON_JOURS, revalorisations, ajouterMois, PREAVIS_JOURS } from './occupation.js?v=20261127-7';
 
 const C = window.CONFIG || {};
 const $ = (s) => document.querySelector(s);
@@ -31,6 +31,7 @@ let TRI = 'retard', Q = '';
 let OCC = null; // { inst: { calcule_le, par, donnees }, chargement, maj, progression, erreur, erreurMaj }
 let OCC_BAT = 'tous', OCC_STATUT = 'tous', OCC_Q = '';
 let CLI_BAT = 'tous', CLI_TRI = 'loyer', CLI_Q = '';
+let RV_STATUT = 'a_traiter', RV_CAT = 'bureaux', RV_BAT = 'tous', RV_Q = '';
 const CLI_OUVERTS = new Set(); // fiches clients dépliées
 const OCC_PERIME_H = 12; // l'instantané est recalculé à l'ouverture s'il a plus de 12 heures
 const OUVERTS = new Set();
@@ -138,15 +139,18 @@ function tuiles() {
   const T = OCC?.inst?.donnees?.total;
   const enCours = OCC?.chargement || OCC?.maj;
   const K = OCC?.inst?.donnees?.clients;
+  const RV = lignesRevalo();
   const compteur = {
     recouvrement: R ? String(R.clients.length) : '…',
     occupation: T ? pct(T.surface_occupee, T.surface) : (enCours ? '…' : ''),
     clients: K ? String(K.length) : (enCours ? '…' : ''),
+    revalo: RV ? String(RV.filter((r) => r.cat === 'bureaux' && (r.statut === 'en_retard' || r.statut === 'a_prevenir')).length) : (enCours ? '…' : ''),
   };
   const sous = {
     recouvrement: R ? `clients au niveau 5 · ${eur0(R.clients.reduce((s, c) => s + c.total, 0))}` : 'chargement',
     occupation: T ? `surface occupée · ${T.libres} bureaux libres` : (enCours ? 'chargement' : 'en préparation'),
     clients: K ? `clients en cours · ${eur0(K.reduce((s, c) => s + c.loyer, 0))} / mois` : (enCours ? 'chargement' : 'en préparation'),
+    revalo: RV ? `bureaux à traiter · ${RV.filter((r) => r.cat === 'bureaux' && r.statut === 'programmee').length} hausses programmées` : (enCours ? 'chargement' : 'en préparation'),
   };
   return `<nav class="tiles">${ONGLETS.map((o) => `<a class="tile ${o.id} ${ONGLET === o.id ? 'on' : ''}" href="#${o.id}">
     <div class="t">${esc(o.titre)}</div><div class="n ${compteur[o.id] ? '' : 'vide'}">${esc(compteur[o.id] || '—')}</div>
@@ -156,8 +160,15 @@ function tuiles() {
 function rendu() {
   if (!PRENOM) return;
   const m = $('#main');
-  const defilement = window.scrollY, recherche = ['q', 'oq', 'cq'].includes(document.activeElement?.id) ? document.activeElement.selectionStart : null;
+  const defilement = window.scrollY, recherche = ['q', 'oq', 'cq', 'rq'].includes(document.activeElement?.id) ? document.activeElement.selectionStart : null;
   let h = tuiles();
+  if (ONGLET === 'revalo') {
+    m.innerHTML = h + vueRevalo();
+    const q = $('#rq');
+    if (q) { q.addEventListener('input', (e) => { RV_Q = e.target.value; lignesRevaloTable(); }); lignesRevaloTable(); if (recherche !== null) { q.focus(); q.setSelectionRange(recherche, recherche); } }
+    window.scrollTo(0, defilement);
+    return;
+  }
   if (ONGLET === 'clients') {
     m.innerHTML = h + vueClients();
     const q = $('#cq');
@@ -246,9 +257,14 @@ function ligne(c, R) {
 
 // ---------------------------------------------------------------------------- événements
 document.addEventListener('click', (e) => {
-  const t = e.target.closest('[data-tri], #b-actualiser, #b-occ-actualiser, [data-bat], [data-statut], [data-cbat], [data-ctri], [data-fiche]');
+  const t = e.target.closest('[data-tri], #b-actualiser, #b-occ-actualiser, [data-bat], [data-statut], [data-cbat], [data-ctri], [data-fiche], [data-rstatut], [data-rcat], [data-rbat]');
   if (!t) return;
-  if (t.dataset.fiche) { const k = t.dataset.fiche; if (CLI_OUVERTS.has(k)) CLI_OUVERTS.delete(k); else CLI_OUVERTS.add(k); lignesClients(); }
+  if (t.dataset.rstatut || t.dataset.rcat || t.dataset.rbat) {
+    if (t.dataset.rstatut) RV_STATUT = t.dataset.rstatut;
+    if (t.dataset.rcat) RV_CAT = t.dataset.rcat;
+    if (t.dataset.rbat) RV_BAT = t.dataset.rbat;
+    lignesRevaloTable();
+  } else if (t.dataset.fiche) { const k = t.dataset.fiche; if (CLI_OUVERTS.has(k)) CLI_OUVERTS.delete(k); else CLI_OUVERTS.add(k); lignesClients(); }
   else if (t.id === 'b-actualiser') actualiser();
   else if (t.id === 'b-occ-actualiser') actualiserOccupation();
   else if (t.dataset.cbat) { CLI_BAT = t.dataset.cbat; lignesClients(); }
@@ -494,4 +510,92 @@ function ligneClient(c, impaye) {
     <td>${h ? `${dfr(h.date)}<div class="sub">${h.pct > 0 ? '+' : ''}${h.pct} %</div>` : '<span class="sub">–</span>'}</td>
     <td class="num">${impaye ? `<span class="neg"><b>${eur0(impaye.total)}</b></span><div class="sub">${impaye.retard_max} j de retard</div>` : '<span class="sub">–</span>'}</td>
   </tr>${fiche}`;
+}
+
+// ---------------------------------------------------------------------------- revalorisation (lecture seule)
+const RV_STATUTS = {
+  en_retard: 'En retard', a_prevenir: 'À prévenir', programmee: 'Programmée', a_jour: 'À jour', se_termine: 'Se termine avant',
+};
+const MOIS = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'];
+let RV_CACHE = { inst: null, rows: null };
+/** Contrats et statuts de revalorisation, recalculés seulement quand l'instantané change. */
+function lignesRevalo() {
+  const I = OCC?.inst;
+  if (!I?.donnees?.clients) return null;
+  if (RV_CACHE.inst !== I) RV_CACHE = { inst: I, rows: revalorisations(I.donnees.clients, I.donnees.aujourdhui || aujourdhuiParis()) };
+  return RV_CACHE.rows;
+}
+
+function vueRevalo() {
+  if (!OCC || (OCC.chargement && !OCC.inst)) return `<div class="center"><div class="big-spin"></div><p>Chargement…</p></div>`;
+  const I = OCC.inst, RV = lignesRevalo();
+  const etatArchie = OCC.maj
+    ? `<span class="maj"><span class="spin"></span> Lecture d'Archie — <span id="occ-progression">${esc(OCC.progression || '')}</span></span>`
+    : OCC.erreurMaj ? `<span class="maj ko">Archie non relu : ${esc(OCC.erreurMaj)}</span>` : '';
+  let h = `<div class="etat">${I?.calcule_le && RV ? `<span>Calculé le <b>${esc(quand(new Date(I.calcule_le)))}</b>${I.par ? ` par ${esc(I.par)}` : ''}</span>` : '<span>Pas encore calculé</span>'}
+    ${etatArchie}<button class="btn sm" id="b-occ-actualiser" ${OCC.maj ? 'disabled' : ''}>Actualiser</button></div>`;
+  if (!RV) return h + `<div class="empty">Lecture d'Archie en cours (environ 20 secondes)…</div>`;
+  h += `<div class="info">Lecture seule, d'après le calendrier des prix d'Archie. Les hausses faites en réduisant une remise et les règles propres à certains contrats (blocage, plafond) n'y figurent pas.</div>`;
+
+  const bureaux = RV.filter((r) => r.cat === 'bureaux');
+  const n = (s, l = bureaux) => l.filter((r) => r.statut === s);
+  const somme = (l) => l.reduce((s, r) => s + r.gain, 0);
+  h += `<div class="resume">
+    <div><div class="n neg">${n('en_retard').length}</div><div class="l">bureaux en retard · +${eur0(somme(n('en_retard')))} / mois à +3 %</div></div>
+    <div><div class="n">${n('a_prevenir').length}</div><div class="l">à prévenir sous ${PREAVIS_JOURS} jours</div></div>
+    <div><div class="n pos">${n('programmee').length}</div><div class="l">hausses programmées · +${eur0(somme(n('programmee')))} / mois</div></div>
+    <div><div class="n">${n('a_jour').length}</div><div class="l">bureaux à jour</div></div></div>`;
+
+  // calendrier des 12 prochains mois (tous contrats) : hausses programmées et anniversaires sans hausse programmée
+  const auj = I.donnees.aujourdhui || aujourdhuiParis();
+  const mois = Array.from({ length: 12 }, (_, i) => ajouterMois(auj.slice(0, 7) + '-01', i).slice(0, 7));
+  const parMois = (s) => Object.fromEntries(mois.map((m) => [m, RV.filter((r) => r.statut === s && r.anniversaire?.slice(0, 7) === m)]));
+  const P = parMois('programmee'), A = { ...Object.fromEntries(mois.map((m) => [m, []])) };
+  for (const r of RV) if ((r.statut === 'a_prevenir' || r.statut === 'a_jour') && A[r.anniversaire?.slice(0, 7)]) A[r.anniversaire.slice(0, 7)].push(r);
+  const libMois = (m) => `${MOIS[Number(m.slice(5)) - 1]} ${m.slice(2, 4)}`;
+  h += `<h3 class="titre">Les 12 prochains mois <span class="sub">(tous contrats)</span></h3><div class="tablewrap"><table class="synth"><thead><tr><th></th>${mois.map((m) => `<th class="num">${libMois(m)}</th>`).join('')}</tr></thead><tbody>
+    <tr><td>Hausses programmées</td>${mois.map((m) => `<td class="num">${P[m].length || '–'}</td>`).join('')}</tr>
+    <tr><td class="sub">gain mensuel</td>${mois.map((m) => `<td class="num pos">${P[m].length ? '+' + eur0(somme(P[m])) : ''}</td>`).join('')}</tr>
+    <tr><td>Anniversaires sans hausse programmée</td>${mois.map((m) => `<td class="num">${A[m].length || '–'}</td>`).join('')}</tr>
+    </tbody></table></div>`;
+
+  h += `<h3 class="titre">Contrats</h3><div class="outils">
+    <span class="tri">${[['a_traiter', 'À traiter'], ['en_retard', 'En retard'], ['a_prevenir', 'À prévenir'], ['programmee', 'Programmées'], ['a_jour', 'À jour'], ['tous', 'Tous']].map(([k, t]) => `<button data-rstatut="${k}">${t}</button>`).join('')}</span>
+    <span class="tri">${[['bureaux', 'Bureaux'], ['coresidents', 'Co-résidents'], ['itinerants', 'Itinérants'], ['parking', 'Parking'], ['domiciliation', 'Domiciliation'], ['tous', 'Tout']].map(([k, t]) => `<button data-rcat="${k}">${t}</button>`).join('')}</span>
+    <span class="tri">${[['tous', 'Tous'], ...BATIMENTS.map((b) => [b.code, b.code])].map(([k, t]) => `<button data-rbat="${k}">${t}</button>`).join('')}</span>
+    <input class="search" id="rq" placeholder="Rechercher un client, un bureau…" value="${esc(RV_Q)}"></div>
+    <div class="sub" id="rv-compte"></div>
+    <div class="tablewrap"><table class="clients"><thead><tr><th>Statut</th><th>Client</th><th>Contrat</th><th>Bât.</th><th class="num">Loyer HT</th><th>Dernière hausse</th><th>Prochaine hausse</th><th class="num">Gain / mois</th></tr></thead><tbody id="rcontrats"></tbody></table></div>
+    <div style="height:60px"></div>`;
+  return h;
+}
+
+function lignesRevaloTable() {
+  const RV = lignesRevalo(); if (!RV || !$('#rcontrats')) return;
+  document.querySelectorAll('[data-rstatut]').forEach((b) => b.classList.toggle('on', b.dataset.rstatut === RV_STATUT));
+  document.querySelectorAll('[data-rcat]').forEach((b) => b.classList.toggle('on', b.dataset.rcat === RV_CAT));
+  document.querySelectorAll('[data-rbat]').forEach((b) => b.classList.toggle('on', b.dataset.rbat === RV_BAT));
+  const q = RV_Q.trim().toLowerCase();
+  const ordre = { en_retard: 0, a_prevenir: 1, programmee: 2, a_jour: 3, se_termine: 4 };
+  const L = RV.filter((r) => (RV_STATUT === 'tous' || r.statut === RV_STATUT || (RV_STATUT === 'a_traiter' && (r.statut === 'en_retard' || r.statut === 'a_prevenir')))
+    && (RV_CAT === 'tous' || r.cat === RV_CAT) && (RV_BAT === 'tous' || r.batiment === RV_BAT)
+    && (!q || [r.client, r.contrat, ...(r.bureaux || [])].join(' ').toLowerCase().includes(q)))
+    .sort((a, b) => ordre[a.statut] - ordre[b.statut] || (a.anniversaire || '9999').localeCompare(b.anniversaire || '9999'));
+  $('#rv-compte').textContent = `${L.length} contrat${L.length > 1 ? 's' : ''} · +${eur0(L.reduce((s, r) => s + r.gain, 0))} / mois`;
+  $('#rcontrats').innerHTML = L.length ? L.map((r) => {
+    const prochaine = r.prochaine
+      ? `${dfr(r.prochaine.date)} · ${r.prochaine.pct > 0 ? '+' : ''}${r.prochaine.pct} %<div class="sub">${eur(r.prochaine.de)} → ${eur(r.prochaine.a)} (prix de base)</div>`
+      : r.statut === 'en_retard' ? `<span class="neg">anniversaire passé le ${dfr(r.anniversaire)}</span>`
+        : r.statut === 'se_termine' ? `<span class="sub">fin du contrat le ${dfr(r.fin)}</span>`
+          : `<span class="sub">anniversaire le ${dfr(r.anniversaire)}</span>`;
+    return `<tr>
+      <td><span class="statut rv-${r.statut}">${RV_STATUTS[r.statut]}</span></td>
+      <td><b>${esc(r.client)}</b></td>
+      <td>${esc(r.contrat)}${r.remise ? `<div class="sub">remise ${r.remise} %${r.fin_remise ? ` jusqu'au ${dfr(r.fin_remise)}` : ''}</div>` : ''}${r.fin && r.statut !== 'se_termine' ? `<div class="sub">fin du contrat le ${dfr(r.fin)}</div>` : ''}</td>
+      <td>${esc(r.batiment)}</td>
+      <td class="num">${eur(r.loyer)}</td>
+      <td>${r.derniere ? dfr(r.derniere) : `<span class="sub">aucune depuis le ${dfr(r.debut)}</span>`}</td>
+      <td>${prochaine}</td>
+      <td class="num">${r.gain ? '+' + eur(r.gain) : '–'}</td></tr>`;
+  }).join('') : '<tr><td colspan="8" class="empty">Aucun contrat ne correspond.</td></tr>';
 }

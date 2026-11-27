@@ -129,6 +129,13 @@ table.clients tr.fiche-ligne td{padding:0 10px 14px;background:var(--soft)}
 table.contrats{margin-top:6px;background:#fff;border-radius:8px}
 table.contrats td,table.contrats th{white-space:normal;font-size:12.5px}
 tr.a-venir td{color:var(--green)}
+/* revalorisation */
+.n.neg{color:var(--red)} .n.pos{color:var(--green)}
+.statut.rv-en_retard{background:var(--red-l);color:var(--red)}
+.statut.rv-a_prevenir{background:var(--orange-l);color:var(--orange)}
+.statut.rv-programmee{background:#DCFCE7;color:var(--green)}
+.statut.rv-a_jour{background:var(--blue-l);color:var(--blue)}
+.statut.rv-se_termine{background:#F3F4F6;color:var(--grey)}
 .deux{display:grid;grid-template-columns:1fr 1fr;gap:24px}
 .statut{display:inline-block;border-radius:999px;padding:1px 9px;font-size:12px;font-weight:600;white-space:nowrap}
 .statut.libre{background:#F3F4F6;color:var(--grey)}
@@ -149,6 +156,6 @@ tr.a-venir td{color:var(--green)}
 
 <script src="config.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.118.0/dist/umd/supabase.min.js" integrity="sha384-UagCvVPT5XXA0Hx+nJYUAGBFseHT9zBgpJMSebsAxl9lciTwbT+39j5VfRjdP5Tp" crossorigin="anonymous"></script>
-<script type="module" src="js/tableau.js?v=20261127-6"></script>
+<script type="module" src="js/tableau.js?v=20261127-8"></script>
 </body>
 </html>
