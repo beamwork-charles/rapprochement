@@ -173,6 +173,7 @@ export function calculer(D, aujourdhui) {
   return {
     aujourdhui, mois, horizon,
     batiments, total, unites,
+    clients: calculerClients(abos, D.clients || [], espaces, aujourdhui),
     a_venir: {
       departs: unites.filter((u) => u.statut === 'se_libere').sort((a, b) => a.date.localeCompare(b.date)),
       arrivees: unites.filter((u) => u.statut === 'arrive' || (u.prochain && u.prochain.debut <= horizon && u.statut !== 'arrive'))
@@ -182,4 +183,68 @@ export function calculer(D, aujourdhui) {
     non_rattaches: abos.filter((a) => actifLe(a, aujourdhui) && a.type === 'plan' && /r[ée]sident|plateau/i.test(a.nom) && !/co-?r[ée]s|casier/i.test(a.nom) && !a.bureaux.length)
       .map((a) => ({ space: a.space, nom: a.nom, client: a.client, loyer: loyer(a) })),
   };
+}
+
+// ------------------------------------------------------------------ clients
+const codeBatiment = (space) => BATIMENTS.find((b) => b.space === space)?.code || space;
+
+/** Prochaine hausse du prix de base inscrite dans la grille de prix d'Archie (et la dernière déjà appliquée). */
+export function hausses(grille, aujourdhui) {
+  const g = (grille || []).filter((x) => x && x[0] && x[1] != null).sort((a, b) => a[0].localeCompare(b[0]));
+  const passees = g.filter((x) => x[0] <= aujourdhui);
+  const actuel = passees.length ? passees[passees.length - 1][1] : g[0]?.[1] ?? null;
+  const suivante = g.find((x) => x[0] > aujourdhui && x[1] !== actuel) || null;
+  let derniere = null;
+  for (let i = 1; i < passees.length; i++) if (passees[i][1] > passees[i - 1][1]) derniere = passees[i][0];
+  return {
+    prochaine: suivante && actuel ? { date: suivante[0], de: actuel, a: suivante[1], pct: arrondi(100 * (suivante[1] / actuel - 1)) } : null,
+    derniere,
+  };
+}
+
+/**
+ * Un client par groupe Archie (même identifiant sur les 4 bâtiments), ou par nom pour les particuliers.
+ * Seuls les clients ayant au moins un abonnement en cours ou à venir sont retenus.
+ */
+function calculerClients(abos, groupes, espaces, aujourdhui) {
+  const fiches = new Map(groupes.map((g) => [g.uuid, g]));
+  const parClient = new Map();
+  for (const a of abos) {
+    const cle = a.group_uuid || 'particulier:' + norm(a.client);
+    if (!parClient.has(cle)) parClient.set(cle, []);
+    parClient.get(cle).push(a);
+  }
+  const out = [];
+  for (const [cle, L] of parClient) {
+    const f = fiches.get(cle) || null;
+    const actifs = L.filter((a) => actifLe(a, aujourdhui));
+    const futurs = L.filter((a) => a.debut && a.debut > aujourdhui);
+    if (!actifs.length && !futurs.length) continue;
+    const lignes = [...actifs, ...futurs].sort((a, b) => loyer(b) - loyer(a)).map((a) => {
+      const h = hausses(a.grille, aujourdhui);
+      return {
+        nom: a.nom, batiment: codeBatiment(a.space), cat: a.cat, debut: a.debut, fin: finEffective(a), engagement: a.engagement,
+        loyer: arrondi(loyer(a)), prix: a.prix, remise: a.remise, fin_remise: a.fin_remise, a_venir: !actifLe(a, aujourdhui),
+        bureaux: a.bureaux.map((u) => espaces.get(u)?.nom).filter(Boolean),
+        prochaine_hausse: h.prochaine, derniere_hausse: h.derniere,
+      };
+    });
+    const prochaines = lignes.map((l) => l.prochaine_hausse).filter(Boolean).sort((a, b) => a.date.localeCompare(b.date));
+    const fins = actifs.map(finEffective);
+    out.push({
+      cle, nom: f?.nom || L[0].client || '(sans nom)', particulier: !L[0].group_uuid,
+      batiments: [...new Set(L.map((a) => codeBatiment(a.space)))].sort(),
+      bureaux: [...new Set(actifs.flatMap((a) => a.bureaux.map((u) => espaces.get(u)?.nom).filter(Boolean)))].sort((a, b) => a.localeCompare(b, 'fr', { numeric: true })),
+      categories: Object.fromEntries(CATEGORIES.map(([k]) => [k, actifs.filter((a) => a.cat === k).length]).filter(([, n]) => n)),
+      loyer: arrondi(actifs.reduce((s, a) => s + loyer(a), 0)),
+      loyer_a_venir: arrondi(futurs.reduce((s, a) => s + loyer(a), 0)),
+      depuis: L.map((a) => a.debut).filter(Boolean).sort()[0] || null,
+      fin: fins.length && fins.every(Boolean) ? fins.sort().pop() : null, // fin du dernier contrat, si tous ont une fin
+      prochaine_hausse: prochaines[0] || null,
+      emails: f?.emails || [], responsable: f?.responsable || '', responsable_email: f?.responsable_email || null,
+      siret: f?.siret || null, membres: f?.membres ?? null,
+      abonnements: lignes,
+    });
+  }
+  return out.sort((a, b) => b.loyer - a.loyer);
 }

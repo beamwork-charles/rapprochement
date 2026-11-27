@@ -3,7 +3,7 @@
 // navigateur), ou session d'un compte autorisé de l'outil de pointage (sans mot de passe).
 // Toutes les données passent par la fonction « tableau » ; aucune clé ni donnée dans cette page.
 
-import { calculer, BATIMENTS, CATEGORIES, HORIZON_JOURS } from './occupation.js?v=20261127-4';
+import { calculer, BATIMENTS, CATEGORIES, HORIZON_JOURS } from './occupation.js?v=20261127-5';
 
 const C = window.CONFIG || {};
 const $ = (s) => document.querySelector(s);
@@ -30,6 +30,8 @@ let REC = null; // { R, chargement, maj, erreur, erreurMaj, dernierEssai }
 let TRI = 'retard', Q = '';
 let OCC = null; // { inst: { calcule_le, par, donnees }, chargement, maj, progression, erreur, erreurMaj }
 let OCC_BAT = 'tous', OCC_STATUT = 'tous', OCC_Q = '';
+let CLI_BAT = 'tous', CLI_TRI = 'loyer', CLI_Q = '';
+const CLI_OUVERTS = new Set(); // fiches clients dépliées
 const OCC_PERIME_H = 12; // l'instantané est recalculé à l'ouverture s'il a plus de 12 heures
 const OUVERTS = new Set();
 
@@ -135,10 +137,16 @@ function tuiles() {
   const R = REC?.R;
   const T = OCC?.inst?.donnees?.total;
   const enCours = OCC?.chargement || OCC?.maj;
-  const compteur = { recouvrement: R ? String(R.clients.length) : '…', occupation: T ? pct(T.surface_occupee, T.surface) : (enCours ? '…' : '') };
+  const K = OCC?.inst?.donnees?.clients;
+  const compteur = {
+    recouvrement: R ? String(R.clients.length) : '…',
+    occupation: T ? pct(T.surface_occupee, T.surface) : (enCours ? '…' : ''),
+    clients: K ? String(K.length) : (enCours ? '…' : ''),
+  };
   const sous = {
     recouvrement: R ? `clients au niveau 5 · ${eur0(R.clients.reduce((s, c) => s + c.total, 0))}` : 'chargement',
     occupation: T ? `surface occupée · ${T.libres} bureaux libres` : (enCours ? 'chargement' : 'en préparation'),
+    clients: K ? `clients en cours · ${eur0(K.reduce((s, c) => s + c.loyer, 0))} / mois` : (enCours ? 'chargement' : 'en préparation'),
   };
   return `<nav class="tiles">${ONGLETS.map((o) => `<a class="tile ${o.id} ${ONGLET === o.id ? 'on' : ''}" href="#${o.id}">
     <div class="t">${esc(o.titre)}</div><div class="n ${compteur[o.id] ? '' : 'vide'}">${esc(compteur[o.id] || '—')}</div>
@@ -148,8 +156,15 @@ function tuiles() {
 function rendu() {
   if (!PRENOM) return;
   const m = $('#main');
-  const defilement = window.scrollY, recherche = ['q', 'oq'].includes(document.activeElement?.id) ? document.activeElement.selectionStart : null;
+  const defilement = window.scrollY, recherche = ['q', 'oq', 'cq'].includes(document.activeElement?.id) ? document.activeElement.selectionStart : null;
   let h = tuiles();
+  if (ONGLET === 'clients') {
+    m.innerHTML = h + vueClients();
+    const q = $('#cq');
+    if (q) { q.addEventListener('input', (e) => { CLI_Q = e.target.value; lignesClients(); }); lignesClients(); if (recherche !== null) { q.focus(); q.setSelectionRange(recherche, recherche); } }
+    window.scrollTo(0, defilement);
+    return;
+  }
   if (ONGLET === 'occupation') {
     m.innerHTML = h + vueOccupation();
     const q = $('#oq');
@@ -231,15 +246,21 @@ function ligne(c, R) {
 
 // ---------------------------------------------------------------------------- événements
 document.addEventListener('click', (e) => {
-  const t = e.target.closest('[data-tri], #b-actualiser, #b-occ-actualiser, [data-bat], [data-statut]');
+  const t = e.target.closest('[data-tri], #b-actualiser, #b-occ-actualiser, [data-bat], [data-statut], [data-cbat], [data-ctri], [data-fiche]');
   if (!t) return;
-  if (t.id === 'b-actualiser') actualiser();
+  if (t.dataset.fiche) { const k = t.dataset.fiche; if (CLI_OUVERTS.has(k)) CLI_OUVERTS.delete(k); else CLI_OUVERTS.add(k); lignesClients(); }
+  else if (t.id === 'b-actualiser') actualiser();
   else if (t.id === 'b-occ-actualiser') actualiserOccupation();
+  else if (t.dataset.cbat) { CLI_BAT = t.dataset.cbat; lignesClients(); }
+  else if (t.dataset.ctri) { CLI_TRI = t.dataset.ctri; lignesClients(); }
   else if (t.dataset.bat) { OCC_BAT = t.dataset.bat; lignesBureaux(); marquerFiltres(); }
   else if (t.dataset.statut) { OCC_STATUT = t.dataset.statut; lignesBureaux(); marquerFiltres(); }
   else { TRI = t.dataset.tri; lignes(); }
 });
-document.addEventListener('toggle', (e) => { const c = e.target?.dataset?.c; if (c) { if (e.target.open) OUVERTS.add(c); else OUVERTS.delete(c); } }, true);
+document.addEventListener('toggle', (e) => {
+  const c = e.target?.dataset?.c; if (c) { if (e.target.open) OUVERTS.add(c); else OUVERTS.delete(c); }
+  const k = e.target?.dataset?.k; if (k) { if (e.target.open) CLI_OUVERTS.add(k); else CLI_OUVERTS.delete(k); }
+}, true);
 window.addEventListener('hashchange', () => {
   const h = location.hash.slice(1);
   if (ONGLETS.some((o) => o.id === h)) { ONGLET = h; rendu(); }
@@ -282,7 +303,8 @@ async function demarrerOccupation() {
   try { etat.inst = await appel('occupation'); } catch (e) { if (sessionPerdue(e)) return; etat.erreur = e.message; }
   if (OCC !== etat) return;
   etat.chargement = false;
-  if (!etat.erreur && (!etat.inst?.donnees || Date.now() - Date.parse(etat.inst.calcule_le) > OCC_PERIME_H * 3600000)) actualiserOccupation();
+  // recalcul si l'instantané est ancien, ou s'il date d'avant l'onglet Clients
+  if (!etat.erreur && (!etat.inst?.donnees?.clients || Date.now() - Date.parse(etat.inst.calcule_le) > OCC_PERIME_H * 3600000)) actualiserOccupation();
   else rendu();
 }
 
@@ -291,7 +313,7 @@ async function actualiserOccupation() {
   const etat = OCC;
   if (!etat || etat.maj) return;
   etat.maj = true; etat.erreurMaj = null;
-  const D = { espaces: [], forfaits: [], abonnements: [] };
+  const D = { espaces: [], forfaits: [], abonnements: [], clients: [] };
   let appels = 0;
   const maj = () => {
     etat.progression = `${appels} lecture${appels > 1 ? 's' : ''} · ${D.abonnements.length} abonnements`;
@@ -299,8 +321,9 @@ async function actualiserOccupation() {
   };
   rendu();
   try {
-    await Promise.all(BATIMENTS.map(async (B) => {
-      for (const lot of ['espaces', 'forfaits', 'abonnements']) {
+    await Promise.all(BATIMENTS.map(async (B, i) => {
+      // les fiches clients d'Archie sont communes aux 4 bâtiments : lues une seule fois
+      for (const lot of i === 0 ? ['espaces', 'forfaits', 'abonnements', 'clients'] : ['espaces', 'forfaits', 'abonnements']) {
         let curseur = null;
         do {
           const r = await appel('occupation_lot', { space: B.space, lot, curseur });
@@ -388,4 +411,87 @@ function lignesBureaux() {
       <td>${esc(u.client)}${u.lot ? `<div class="sub">${esc(u.lot)}</div>` : ''}${u.statut !== 'arrive' && u.prochain ? `<div class="sub">puis ${esc(u.prochain.client)} le ${dfr(u.prochain.debut)}</div>` : ''}</td>
       <td class="num">${u.loyer != null ? eur(u.loyer) : '–'}</td><td class="num">${u.prix_grille != null ? eur0(u.prix_grille) : '–'}</td></tr>`).join('')
     : '<tr><td colspan="8" class="empty">Aucun bureau ne correspond.</td></tr>';
+}
+
+// ---------------------------------------------------------------------------- clients
+const CAT_COURT = { bureaux: 'bureau', coresidents: 'co-résident', itinerants: 'itinérant', parking: 'parking', domiciliation: 'domiciliation', autres: 'autre' };
+const normNom = (s) => String(s ?? '').toUpperCase().replace(/\s*\(.*?\)\s*/g, ' ').replace(/[^A-Z0-9]+/g, ' ').trim();
+
+/** Impayés au niveau 5 (onglet Recouvrement), par nom de client. */
+function impayes() {
+  const m = new Map();
+  for (const c of REC?.R?.clients || []) m.set(normNom(c.client), c);
+  return m;
+}
+
+function vueClients() {
+  if (!OCC || (OCC.chargement && !OCC.inst)) return `<div class="center"><div class="big-spin"></div><p>Chargement…</p></div>`;
+  const I = OCC.inst, K = I?.donnees?.clients;
+  const etatArchie = OCC.maj
+    ? `<span class="maj"><span class="spin"></span> Lecture d'Archie — <span id="occ-progression">${esc(OCC.progression || '')}</span></span>`
+    : OCC.erreurMaj ? `<span class="maj ko">Archie non relu : ${esc(OCC.erreurMaj)}</span>` : '';
+  let h = `<div class="etat">${I?.calcule_le && K ? `<span>Calculé le <b>${esc(quand(new Date(I.calcule_le)))}</b>${I.par ? ` par ${esc(I.par)}` : ''}</span>` : '<span>Pas encore calculé</span>'}
+    ${etatArchie}<button class="btn sm" id="b-occ-actualiser" ${OCC.maj ? 'disabled' : ''}>Actualiser</button></div>`;
+  if (!K) return h + `<div class="empty">Lecture d'Archie en cours (environ 20 secondes)…</div>`;
+  const loyer = K.reduce((s, c) => s + c.loyer, 0);
+  const avecHausse = K.filter((c) => c.prochaine_hausse).length;
+  const imp = impayes();
+  const nImp = K.filter((c) => imp.has(normNom(c.nom))).length;
+  h += `<div class="resume">
+    <div><div class="n">${K.length}</div><div class="l">clients avec un contrat en cours ou à venir</div></div>
+    <div><div class="n">${eur0(loyer)}</div><div class="l">loyers HT du mois</div></div>
+    <div><div class="n">${avecHausse}</div><div class="l">avec une hausse programmée dans Archie</div></div>
+    <div><div class="n">${REC?.R ? nImp : '…'}</div><div class="l">au niveau 5 de relance</div></div></div>
+    <div class="outils">
+    <span class="tri">${[['tous', 'Tous'], ...BATIMENTS.map((b) => [b.code, b.code])].map(([k, t]) => `<button class="${CLI_BAT === k ? 'on' : ''}" data-cbat="${k}">${t}</button>`).join('')}</span>
+    <span class="tri">Trier par ${[['loyer', 'loyer'], ['nom', 'nom'], ['depuis', 'ancienneté'], ['hausse', 'prochaine hausse']].map(([k, t]) => `<button class="${CLI_TRI === k ? 'on' : ''}" data-ctri="${k}">${t}</button>`).join('')}</span>
+    <input class="search" id="cq" placeholder="Rechercher un client, un bureau, un email…" value="${esc(CLI_Q)}"></div>
+    <div class="tablewrap"><table class="clients"><thead><tr><th>Client</th><th>Bâtiments</th><th>Bureaux et services</th><th class="num">Loyer HT / mois</th><th>Client depuis</th><th>Prochaine hausse</th><th class="num">Impayé niv. 5</th></tr></thead><tbody id="cclients"></tbody></table></div>
+    <div style="height:60px"></div>`;
+  return h;
+}
+
+function lignesClients() {
+  const K = OCC?.inst?.donnees?.clients; if (!K || !$('#cclients')) return;
+  document.querySelectorAll('[data-cbat]').forEach((b) => b.classList.toggle('on', b.dataset.cbat === CLI_BAT));
+  document.querySelectorAll('[data-ctri]').forEach((b) => b.classList.toggle('on', b.dataset.ctri === CLI_TRI));
+  const imp = impayes();
+  const q = CLI_Q.trim().toLowerCase();
+  const tri = {
+    loyer: (a, b) => b.loyer - a.loyer,
+    nom: (a, b) => a.nom.localeCompare(b.nom, 'fr'),
+    depuis: (a, b) => (a.depuis || '9999').localeCompare(b.depuis || '9999'),
+    hausse: (a, b) => (a.prochaine_hausse?.date || '9999').localeCompare(b.prochaine_hausse?.date || '9999') || b.loyer - a.loyer,
+  }[CLI_TRI];
+  const L = K.filter((c) => (CLI_BAT === 'tous' || c.batiments.includes(CLI_BAT))
+    && (!q || [c.nom, c.responsable, ...c.emails, ...c.bureaux, ...c.abonnements.map((a) => a.nom)].join(' ').toLowerCase().includes(q))).sort(tri);
+  $('#cclients').innerHTML = L.length ? L.map((c) => ligneClient(c, imp.get(normNom(c.nom)))).join('')
+    : '<tr><td colspan="7" class="empty">Aucun client ne correspond.</td></tr>';
+}
+
+function ligneClient(c, impaye) {
+  const services = Object.entries(c.categories).filter(([k]) => k !== 'bureaux').map(([k, n]) => `${n} ${CAT_COURT[k]}${n > 1 ? 's' : ''}`);
+  const h = c.prochaine_hausse;
+  const contrats = c.abonnements.map((a) => `<tr${a.a_venir ? ' class="a-venir"' : ''}>
+      <td>${esc(a.nom)}${a.a_venir ? ' <span class="tag">à venir</span>' : ''}</td><td>${esc(a.batiment)}</td>
+      <td>${a.debut ? dfr(a.debut) : '–'} → ${a.fin ? dfr(a.fin) : 'sans fin'}</td>
+      <td class="num">${eur(a.loyer)}${a.remise ? `<div class="sub">remise ${a.remise} %${a.fin_remise ? ` jusqu'au ${dfr(a.fin_remise)}` : ''}</div>` : ''}</td>
+      <td>${a.prochaine_hausse ? `${dfr(a.prochaine_hausse.date)} · ${a.prochaine_hausse.pct > 0 ? '+' : ''}${a.prochaine_hausse.pct} %` : '<span class="sub">aucune programmée</span>'}${a.derniere_hausse ? `<div class="sub">dernière le ${dfr(a.derniere_hausse)}</div>` : ''}</td></tr>`).join('');
+  const contacts = [
+    c.responsable ? `<div>Responsable : ${esc(c.responsable)}${c.responsable_email ? ` · <a href="mailto:${esc(c.responsable_email)}">${esc(c.responsable_email)}</a>` : ''}</div>` : '',
+    c.emails.length ? `<div>Facturation : ${c.emails.map((e) => `<a href="mailto:${esc(e)}">${esc(e)}</a>`).join(', ')}</div>` : '<div class="sub">Aucun email de facturation dans Archie</div>',
+    c.siret ? `<div class="sub">SIRET ${esc(c.siret)}</div>` : '',
+  ].join('');
+  const ouvert = CLI_OUVERTS.has(c.cle);
+  const fiche = ouvert ? `<tr class="fiche-ligne"><td colspan="7"><div class="fiche">${contacts}
+        <table class="synth contrats"><thead><tr><th>Contrat</th><th>Bât.</th><th>Période</th><th class="num">Loyer HT</th><th>Hausse</th></tr></thead><tbody>${contrats}</tbody></table></div></td></tr>` : '';
+  return `<tr class="${ouvert ? 'ouvert' : ''}">
+    <td><button class="lien client" data-fiche="${esc(c.cle)}">${ouvert ? '▾' : '▸'} ${esc(c.nom)}</button>${c.particulier ? '<span class="tag">particulier</span>' : ''}</td>
+    <td>${esc(c.batiments.join(' + '))}</td>
+    <td>${c.bureaux.length ? `<b>${esc(c.bureaux.join(', '))}</b>` : ''}${services.length ? `<div class="sub">${esc(services.join(' · '))}</div>` : ''}</td>
+    <td class="num"><b>${eur(c.loyer)}</b>${c.loyer_a_venir ? `<div class="sub">+ ${eur0(c.loyer_a_venir)} à venir</div>` : ''}</td>
+    <td>${c.depuis ? dfr(c.depuis) : '–'}${c.fin ? `<div class="sub">fin ${dfr(c.fin)}</div>` : ''}</td>
+    <td>${h ? `${dfr(h.date)}<div class="sub">${h.pct > 0 ? '+' : ''}${h.pct} %</div>` : '<span class="sub">–</span>'}</td>
+    <td class="num">${impaye ? `<span class="neg"><b>${eur0(impaye.total)}</b></span><div class="sub">${impaye.retard_max} j de retard</div>` : '<span class="sub">–</span>'}</td>
+  </tr>${fiche}`;
 }

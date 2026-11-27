@@ -116,7 +116,19 @@ details ul{margin:6px 0 0;padding-left:16px;font-size:12.5px;color:var(--ink2)}
 table.synth td,table.synth th{padding:8px 10px;white-space:nowrap}
 table.synth tr.total td{font-weight:700;border-top:2px solid var(--ink)}
 table.bureaux td{padding:8px 10px}
-td.pos{color:var(--green)} td.neg{color:var(--red)}
+td.pos{color:var(--green)} td.neg,.neg{color:var(--red)}
+/* clients */
+table.clients td{padding:10px;vertical-align:top}
+.lien{background:none;border:none;padding:0;text-align:left;color:var(--ink)}
+.lien.client{font-weight:600;font-size:14px}
+.lien:hover{color:var(--blue)}
+table.clients tr.ouvert td{border-bottom:none;background:var(--soft)}
+table.clients tr.fiche-ligne td{padding:0 10px 14px;background:var(--soft)}
+.fiche{padding:4px 2px;font-size:12.5px;display:grid;gap:4px}
+.fiche div{overflow-wrap:anywhere}
+table.contrats{margin-top:6px;background:#fff;border-radius:8px}
+table.contrats td,table.contrats th{white-space:normal;font-size:12.5px}
+tr.a-venir td{color:var(--green)}
 .deux{display:grid;grid-template-columns:1fr 1fr;gap:24px}
 .statut{display:inline-block;border-radius:999px;padding:1px 9px;font-size:12px;font-weight:600;white-space:nowrap}
 .statut.libre{background:#F3F4F6;color:var(--grey)}
@@ -137,6 +149,6 @@ td.pos{color:var(--green)} td.neg{color:var(--red)}
 
 <script src="config.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.118.0/dist/umd/supabase.min.js" integrity="sha384-UagCvVPT5XXA0Hx+nJYUAGBFseHT9zBgpJMSebsAxl9lciTwbT+39j5VfRjdP5Tp" crossorigin="anonymous"></script>
-<script type="module" src="js/tableau.js?v=20261127-4"></script>
+<script type="module" src="js/tableau.js?v=20261127-6"></script>
 </body>
 </html>
