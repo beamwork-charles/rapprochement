@@ -1,6 +1,6 @@
 // Données du calendrier des relances, communes à l'écran principal et à la page de suivi « niveau 5 ».
 // Le calcul lui-même est dans relances.js (même règle partout).
-import * as RL from './relances.js?v=20261127-1';
+import * as RL from './relances.js?v=20261127-2';
 
 export const SPACES = ['16-cours-albert-1er', '25-rue-du-4-septembre', '28-cours-albert-1er', '42-rue-notre-dame-des-victoires'];
 const dateParis = (q) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Paris', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(q));

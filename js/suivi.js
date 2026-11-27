@@ -3,8 +3,8 @@
 // Deux façons d'y accéder :
 //   • par lien (…/suivi.html#cle=…) : aucune connexion ; la fonction « suivi » vérifie la clé et ne renvoie que le niveau 5 ;
 //   • connecté avec un compte @thebureau.paris.
-import * as D from './relances-donnees.js?v=20261127-1';
-import * as RL from './relances.js?v=20261127-1';
+import * as D from './relances-donnees.js?v=20261127-2';
+import * as RL from './relances.js?v=20261127-2';
 
 const C = window.CONFIG || {};
 const $ = (s) => document.querySelector(s);

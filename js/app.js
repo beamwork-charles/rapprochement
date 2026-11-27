@@ -1,9 +1,9 @@
 // Écran « Pointage » : connexion, dépôt du relevé, analyse (moteur dans le navigateur), validation vers Archie.
 // Portage de src_reference/ui/index.html + server.py sur Supabase.
-import { lireReleve } from './releve.js?v=20261127-1';
-import * as E from './engine.js?v=20261127-1';
-import * as RL from './relances.js?v=20261127-1';
-import * as D from './relances-donnees.js?v=20261127-1';
+import { lireReleve } from './releve.js?v=20261127-2';
+import * as E from './engine.js?v=20261127-2';
+import * as RL from './relances.js?v=20261127-2';
+import * as D from './relances-donnees.js?v=20261127-2';
 
 const C = window.CONFIG || {};
 const XLSX = window.XLSX;
@@ -354,10 +354,14 @@ async function afficher(session) {
   courant = user ? user.id : null;
   if (!user) return vueConnexion();
   if (!estMembre(user.email)) { await sb.auth.signOut(); return vueConnexion(`Adresse @${C.DOMAINE} uniquement.`); }
-  // accès « suivi seul » (Oscar) : il arrive directement sur la page Suivi niveau 5, sans rien voir de cet écran
-  // (la base et les fonctions lui refusent de toute façon le pointage)
-  const { data: acces } = await sb.rpc('mon_acces');
-  if (acces === 'suivi') { location.replace('suivi.html'); return; }
+  // Seules les personnes à qui Charles a ouvert un accès (liste d'autorisation en base) utilisent l'outil.
+  // La base et les fonctions refusent de toute façon tout le reste : ici on évite seulement d'afficher un écran vide.
+  const { data: acces, error: erreurAcces } = await sb.rpc('mon_acces');
+  if (erreurAcces) { montrerEcran(); vue(`<div class="center"><h2>Connexion impossible pour le moment</h2><p>${esc(erreurAcces.message)}</p><p style="margin-top:22px"><button class="btn primary" onclick="location.reload()">Réessayer</button></p></div>`); return; }
+  if (acces !== 'complet') {
+    await sb.auth.signOut(); courant = null;
+    return vueConnexion("Cette adresse n'est pas autorisée à utiliser l'outil. Demandez à Charles de vous ouvrir un accès.");
+  }
   montrerEcran();
   USER = user;
   NOM = nomDepuisEmail(user.email);
