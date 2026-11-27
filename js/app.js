@@ -1,9 +1,9 @@
 // Écran « Pointage » : connexion, dépôt du relevé, analyse (moteur dans le navigateur), validation vers Archie.
 // Portage de src_reference/ui/index.html + server.py sur Supabase.
-import { lireReleve } from './releve.js?v=20261127-6';
-import * as E from './engine.js?v=20261127-6';
-import * as RL from './relances.js?v=20261127-6';
-import * as D from './relances-donnees.js?v=20261127-6';
+import { lireReleve } from './releve.js?v=20261127-7';
+import * as E from './engine.js?v=20261127-7';
+import * as RL from './relances.js?v=20261127-7';
+import * as D from './relances-donnees.js?v=20261127-7';
 
 const C = window.CONFIG || {};
 const XLSX = window.XLSX;
@@ -615,6 +615,8 @@ async function analyser({ arrierePlan = false } = {}) {
   S.invoices = R.invoices.filter((i) => i.reste > 0.005 && ['open', 'partially_paid'].includes(i.state))
     .map((i) => ({ uuid: i.uuid, space: i.space, ref: i.ref, client: i.client, site: i.site, reste: i.reste, date: i.date, group_uuid: i.group_uuid }))
     .sort((a, b) => (a.ref || '').localeCompare(b.ref || ''));
+  // toutes les factures lues (y compris réglées), avec leurs adresses de facturation : pour préparer les emails aux clients
+  S.toutesFactures = new Map(R.invoices.filter((i) => i.ref).map((i) => [i.ref, { uuid: i.uuid, space: i.space, ref: i.ref, client: i.client, group_uuid: i.group_uuid, reste: i.reste, contacts: i.contacts || [] }]));
   if (arrierePlan) {
     // les pointages faits pendant la relecture restent affichés ; la sélection ne garde que les lignes encore à pointer
     const pret = new Set(inTab('pret').filter((l) => !isOk(l)).map((l) => l.id));
@@ -1042,8 +1044,8 @@ const aEnvoye = (cle, champ = 'op_id') => (S.emails || []).some((e) => e[champ] 
 
 /** Factures de la ligne : celles pointées (ou proposées), sinon celles citées dans l'explication (doublon, montant différent). */
 function facturesDeLigne(l) {
-  const parRef = new Map((S.invoices || []).map((i) => [i.ref, i]));
-  const parUuid = new Map((S.invoices || []).map((i) => [i.uuid, i]));
+  const parRef = S.toutesFactures || new Map((S.invoices || []).map((i) => [i.ref, i]));
+  const parUuid = new Map([...parRef.values()].map((i) => [i.uuid, i]));
   const prop = (ref) => (l.props || []).find((x) => x.ref === ref);
   let aff;
   if (isOk(l)) aff = (act(l).paiements || []).map((p) => ({ ref: p.ref, montant: Number(p.montant), inv: parRef.get(p.ref), du: prop(p.ref)?.reste_avant }));
@@ -1065,13 +1067,15 @@ function brouillonEmail(l) {
     P[0] += aff.length === 1 ? ` Il a bien été pris en compte et affecté à la facture ${aff[0].ref}.`
       : ` Il a bien été pris en compte et affecté aux factures suivantes :\n${liste(aff, (x) => eur(x.montant))}`;
     if (k === 'partiel') {
-      const restes = aff.map((x) => ({ ...x, reste: x.du != null ? r2(x.du - x.montant) : null })).filter((x) => x.reste > 0.005);
+      // un reste de moins de 5 € n'est pas réclamé (régularisation comptable)
+      const restes = aff.map((x) => ({ ...x, reste: x.du != null ? r2(x.du - x.montant) : null })).filter((x) => x.reste >= SEUIL_ECART);
       if (restes.length === 1) P.push(`Le montant dû sur cette facture étant de ${eur(restes[0].du)}, il reste ${eur(restes[0].reste)} à régler. Merci d'effectuer ce complément en indiquant le numéro de facture ${restes[0].ref} dans le libellé du virement.`);
       if (restes.length > 1) P.push(`Il reste à régler :\n${liste(restes, (x) => eur(x.reste))}\nMerci d'effectuer ces compléments en indiquant les numéros de facture dans le libellé du virement.`);
       if (restes.length) consigne = false;
     }
     const surplus = r2(l.credit - aff.reduce((s, x) => s + x.montant, 0));
-    if (k === 'trop' && surplus >= 0.01) P.push(`Le montant reçu dépasse de ${eur(surplus)} le montant dû : cette somme est conservée à votre crédit et sera déduite de votre prochaine facture, sauf demande contraire de votre part.`);
+    if (k === 'trop' && surplus >= SEUIL_ECART) P.push( // moins de 5 € : pas d'avance, donc rien à annoncer
+`Le montant reçu dépasse de ${eur(surplus)} le montant dû : cette somme est conservée à votre crédit et sera déduite de votre prochaine facture, sauf demande contraire de votre part.`);
     if (k === 'confirmer') P.push('Si ce virement concernait une autre facture, merci de nous le signaler en réponse à ce message.');
   } else if (k === 'doublon' && citees.length) {
     P.push(`Le libellé de ce virement mentionne ${citees.length > 1 ? `les factures ${citees.map((x) => x.ref).join(', ')}, qui sont déjà réglées` : `la facture ${citees[0].ref}, qui est déjà réglée`} dans nos comptes. Pourriez-vous nous indiquer à quelle facture ce paiement se rapporte ? Nous l'affecterons dès réception de votre réponse.`);
