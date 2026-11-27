@@ -1,9 +1,9 @@
 // Écran « Pointage » : connexion, dépôt du relevé, analyse (moteur dans le navigateur), validation vers Archie.
 // Portage de src_reference/ui/index.html + server.py sur Supabase.
-import { lireReleve } from './releve.js?v=20261127-5';
-import * as E from './engine.js?v=20261127-5';
-import * as RL from './relances.js?v=20261127-5';
-import * as D from './relances-donnees.js?v=20261127-5';
+import { lireReleve } from './releve.js?v=20261127-6';
+import * as E from './engine.js?v=20261127-6';
+import * as RL from './relances.js?v=20261127-6';
+import * as D from './relances-donnees.js?v=20261127-6';
 
 const C = window.CONFIG || {};
 const XLSX = window.XLSX;
@@ -30,6 +30,7 @@ function vue(html) { $('#main').innerHTML = html; }
 function boutons() {
   const co = Boolean(USER), pret = S && S.status === 'ready';
   $('#b-out').hidden = !co; $('#b-deposer').hidden = !co; $('#b-excel').hidden = !co;
+  $('#b-emails').hidden = !co || !pret; $('#b-emails').classList.toggle('on', TAB === 'emails');
   $('#b-reload').hidden = !co || !S?.releve;
   const occupe = !S || S.status === 'loading' || S.sending;
   $('#b-deposer').disabled = occupe; $('#b-reload').disabled = occupe || !pret || S.archieEnCours;
@@ -423,6 +424,7 @@ async function chargerReleve(alerte = null) {
     }
     if (!ops) throw new Error('Aucun relevé complet trouvé : déposez à nouveau le fichier.');
     if (S !== etat) return;
+    chargerEmails(); // journal des emails : affiché sous les lignes « À vérifier » dès qu'il est lu
     S.bank = ops.map((o) => ({
       id: o.op_id, banque: o.banque, ligne: o.ligne, date: o.date_valeur, libelle: o.libelle || '', info: o.info || '',
       texte: ((o.libelle || '') + ' ' + (o.info || '')).trim(), credit: Number(o.credit), debit: Number(o.debit),
@@ -757,6 +759,7 @@ function render() {
   <div class="ctl ${okCtl ? 'ok' : 'ko'}">Contrôle : ${S.lines.length} encaissements · ${eur(tot)} · <b>${okCtl ? 'tous répartis dans les 4 onglets ✓' : 'écart ' + eur(tot - totTabs)}</b></div>`;
   h += `<div class="tools"><input class="search" id="q" placeholder="Rechercher un client, une facture, un montant…" value="${esc(Q)}">
         <span id="chips"></span>
+        ${TAB === 'emails' ? '<button class="link" onclick="A.onglet(\'verif\')">← Retour à « À vérifier »</button>' : ''}
         ${TAB === 'pret' || TAB === 'verif' ? `<label class="toggle"><input type="checkbox" id="hide" ${HIDE ? 'checked' : ''}> Masquer les lignes pointées</label>` : ''}</div>
         <div id="body" class="tablewrap"></div><div class="pad-bottom"></div>`;
   m.innerHTML = h;
@@ -774,6 +777,7 @@ function renderBody() {
   if (TAB === 'cote') b.innerHTML = coteView();
   if (TAB === 'deja') b.innerHTML = dejaView();
   if (TAB === 'relances') b.innerHTML = relancesView();
+  if (TAB === 'emails') b.innerHTML = emailsView();
   chips(); dock();
 }
 function statusCell(l, selectable) {
@@ -917,9 +921,10 @@ function verifView() {
       const k = PB[l.probleme] || 'inconnu';
       h += `<tr class="${isOk(l) ? 'ok' : isErr(l) ? 'err' : ''}"><td><span class="badge b-${k}">${esc(l.probleme)}</span></td>
         <td class="date">${dfr(l.date)}</td><td class="num strong">${eur(l.credit)}</td>
-        <td><div class="lib" title="${esc(l.texte)}">${esc(l.texte)}</div><div class="expl">${esc(l.detail)}${esc(petitEcart(l))}</div><div class="sub">${esc(l.banque)}</div>${isErr(l) ? `<div class="errmsg">${esc(act(l).message)}</div>` : ''}${isOk(l) && act(l).avance ? `<div class="expl">Avance de ${eur(act(l).avance.montant)} enregistrée${act(l).avertissement ? ' — ' + esc(act(l).avertissement) : ''}</div>` : ''}</td>
+        <td><div class="lib" title="${esc(l.texte)}">${esc(l.texte)}</div><div class="expl">${esc(l.detail)}${esc(petitEcart(l))}</div><div class="sub">${esc(l.banque)}</div>${isErr(l) ? `<div class="errmsg">${esc(act(l).message)}</div>` : ''}${isOk(l) && act(l).avance ? `<div class="expl">Avance de ${eur(act(l).avance.montant)} enregistrée${act(l).avertissement ? ' — ' + esc(act(l).avertissement) : ''}</div>` : ''}${etatEmail(l.id)}</td>
         <td class="propcell">${proposition(l)}${noteEcart(l)}</td>
-        <td class="num">${isOk(l) ? `<span class="done"><i></i>Pointé</span>` : isBusy(l) ? '<span class="spin"></span>' : `<div class="acts"><button class="btn sm danger" onclick="A.refuserBox(['${l.id}'],'cette ligne')" ${S.sending ? 'disabled' : ''}>Refuser</button><button class="btn sm primary" onclick="A.validerUne('${l.id}')" ${propsFor(l).length && !ecritureImpossible() ? '' : 'disabled'}>Valider</button></div>`}</td></tr>`;
+        <td class="num">${isOk(l) ? `<span class="done"><i></i>Pointé</span>` : isBusy(l) ? '<span class="spin"></span>' : `<div class="acts"><button class="btn sm danger" onclick="A.refuserBox(['${l.id}'],'cette ligne')" ${S.sending ? 'disabled' : ''}>Refuser</button><button class="btn sm primary" onclick="A.validerUne('${l.id}')" ${propsFor(l).length && !ecritureImpossible() ? '' : 'disabled'}>Valider</button></div>`}
+          <div class="acts" style="margin-top:6px"><button class="btn sm" onclick="A.emailVirement('${l.id}')">✉ ${aEnvoye(l.id) ? 'Renvoyer un email' : 'Email au client'}</button></div></td></tr>`;
     }
     h += `</tbody></table>`;
   }
@@ -951,11 +956,11 @@ function avancesView() {
       ? `<select id="imp-f-${a.id}" class="search" style="width:260px" onchange="A.impMontant('${a.id}')">${F.map((i) => `<option value="${i.uuid}">${esc(i.ref)} · ${esc(i.site)} · reste ${eur(i.reste)}</option>`).join('')}</select>
          <input id="imp-m-${a.id}" class="search" style="width:110px;text-align:right" value="${String(Math.min(a.restant, F[0].reste).toFixed(2)).replace('.', ',')}">`
       : `<span class="sub">${!a.group_uuid ? 'Client Archie non identifié : à imputer à la main' : S.archieEnCours ? 'Factures en cours de lecture dans Archie…' : 'Aucune facture ouverte pour ce client pour l\'instant'}</span>`;
-    h += `<tr><td><div class="strong">${esc(a.client)}</div><div class="sub">${esc(a.factures_soldees || '')}</div></td>
+    h += `<tr><td><div class="strong">${esc(a.client)}</div><div class="sub">${esc(a.factures_soldees || '')}</div>${etatEmail(a.id, 'avance_id')}</td>
       <td class="date">${dfr(a.date_virement)}<div class="sub">${esc(a.par_email || '')}</div></td>
       <td class="num strong">${eur(a.restant)}${a.montant_impute > 0 ? `<div class="sub">sur ${eur(a.montant)}</div>` : ''}</td>
       <td>${choix}</td>
-      <td class="num"><div class="acts"><button class="btn sm" onclick="A.emailBox('${a.id}')">Email préparé</button><button class="btn sm primary" onclick="A.imputerBox('${a.id}')" ${F.length && !ecritureImpossible() ? '' : 'disabled'}>Imputer</button></div></td></tr>`;
+      <td class="num"><div class="acts"><button class="btn sm" onclick="A.emailAvance('${a.id}')">${aEnvoye(a.id, 'avance_id') ? 'Renvoyer un email' : 'Email au client'}</button><button class="btn sm primary" onclick="A.imputerBox('${a.id}')" ${F.length && !ecritureImpossible() ? '' : 'disabled'}>Imputer</button></div></td></tr>`;
   }
   return h + `</tbody></table>`;
 }
@@ -990,18 +995,251 @@ function imputerBox(id) {
       toast(data?.resultat === 'ok' ? `Avance imputée sur ${data.facture_ref} : ${eur(data.montant)}` : `Imputation non faite : ${data?.message || message || 'réponse illisible'}`);
     });
 }
-function emailBox(id) {
-  const a = S.avances.find((x) => x.id === id);
-  const e = a?.email_prepare || {};
-  $('#modal').innerHTML = `<h3>Email d'information préparé</h3>
-    <div class="kv"><span>Destinataires</span><b>${esc((e.destinataires || []).join(', ') || 'à compléter')}</b><span>Objet</span><b>${esc(e.objet || '')}</b></div>
-    <textarea id="email-texte" rows="12">${esc(e.texte || '')}</textarea>
-    <p class="sub">Brouillon à relire : il n'est pas envoyé par l'outil.</p>
-    <div class="row"><button class="btn" onclick="A.fermer()">Fermer</button><button class="btn primary" id="mok">Copier le texte</button></div>`;
-  $('#mok').onclick = async () => {
-    try { await navigator.clipboard.writeText(`Objet : ${e.objet || ''}\n\n${$('#email-texte').value}`); toast('Texte copié'); } catch { toast('Copie impossible : sélectionnez le texte à la main'); }
+/** Email d'information d'une avance (trop-perçu) : même fenêtre d'envoi que pour les virements à vérifier. */
+function emailAvance(id) {
+  const a = S.avances.find((x) => x.id === id); if (!a) return;
+  const e = a.email_prepare || {};
+  const refs = String(a.factures_soldees || '').match(REF_RE) || [];
+  emailBox({
+    cle: 'av-' + a.id, type: 'avance', avance_id: a.id, op_id: a.op_id, motif: 'Avance (trop-perçu)', client: a.client, group_uuid: a.group_uuid,
+    factures: refs, montant: Number(a.montant), date_virement: a.date_virement, destinataires: e.destinataires || [], aChercher: [],
+    objet: e.objet || `Votre virement du ${dfr(a.date_virement)} — trop-perçu de ${eur(a.montant)}`, texte: e.texte || '',
+    resume: `<span>Client</span><b>${esc(a.client || '—')}</b><span>Avance</span><b>${eur(a.montant)} · virement du ${dfr(a.date_virement)}</b>`,
+  });
+}
+
+// ============================================================================ emails aux clients (onglet « À vérifier »)
+// Un clic prépare l'email selon le motif de la ligne ; la personne le relit, le modifie si besoin et l'envoie.
+// L'envoi passe par la fonction « email-client » (Resend) ; chaque envoi est conservé dans emails_envoyes (journal).
+const REF_RE = /\b(?:FAC|FA0\d)-20\d{2}-\d+\b/g;
+const EMAIL_RE = /^[^@\s<>,;"'*]+@[^@\s<>,;"'*]+\.[^@\s<>,;"'*]+$/;
+const r2 = (x) => Math.round(x * 100) / 100;
+const adresses = (t) => [...new Set(String(t || '').split(/[\s,;]+/).map((x) => x.trim().toLowerCase()).filter(Boolean))];
+const BROUILLONS = {}; // email en cours de rédaction par ligne : fermer puis rouvrir la fenêtre le retrouve
+let EMAIL_EN_COURS = false;
+
+async function chargerEmails() {
+  const etat = S;
+  try {
+    const rows = await toutLire(() => sb.from('emails_envoyes')
+      .select('id,cree_le,envoye_le,type,motif,op_id,avance_id,client,factures,montant,date_virement,destinataires,copie,objet,statut,erreur,par_email').order('id'));
+    if (S !== etat) return;
+    S.emails = rows;
+    if (S.status === 'ready' && (TAB === 'emails' || TAB === 'verif')) renduSansCouperLaSaisie();
+  } catch (e) { console.warn('Emails non chargés :', e.message); }
+}
+const quandFr = (iso) => { const d = new Date(iso); return `${d.toLocaleDateString('fr-FR')} à ${d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}`; };
+/** Dernier email de la ligne, affiché sous l'explication. */
+function etatEmail(cle, champ = 'op_id') {
+  const E = (S.emails || []).filter((e) => e[champ] === cle).sort((a, b) => b.id - a.id);
+  const e = E[0]; if (!e) return '';
+  const ok = E.filter((x) => x.statut === 'ok').length;
+  if (e.statut === 'ok') return `<div class="mail ok">✉ Email envoyé le ${quandFr(e.envoye_le || e.cree_le)} à ${esc(e.destinataires.join(', '))} · ${esc(nomDepuisEmail(e.par_email))}${ok > 1 ? ` · ${ok} emails au total` : ''}</div>`;
+  if (e.statut === 'erreur') return `<div class="mail ko">✉ Email non envoyé (${quandFr(e.cree_le)}) : ${esc(e.erreur || 'erreur')}</div>`;
+  return `<div class="mail">✉ Envoi en cours…</div>`;
+}
+const aEnvoye = (cle, champ = 'op_id') => (S.emails || []).some((e) => e[champ] === cle && e.statut === 'ok');
+
+/** Factures de la ligne : celles pointées (ou proposées), sinon celles citées dans l'explication (doublon, montant différent). */
+function facturesDeLigne(l) {
+  const parRef = new Map((S.invoices || []).map((i) => [i.ref, i]));
+  const parUuid = new Map((S.invoices || []).map((i) => [i.uuid, i]));
+  const prop = (ref) => (l.props || []).find((x) => x.ref === ref);
+  let aff;
+  if (isOk(l)) aff = (act(l).paiements || []).map((p) => ({ ref: p.ref, montant: Number(p.montant), inv: parRef.get(p.ref), du: prop(p.ref)?.reste_avant }));
+  else aff = propsFor(l).filter((p) => p.montant > 0).map((p) => ({ ref: p.ref, montant: p.montant, inv: parUuid.get(p.uuid) || parRef.get(p.ref), uuid: p.uuid, space: p.space, client: p.client, du: prop(p.ref)?.reste_avant }));
+  const montantsCites = Object.fromEntries([...(l.detail || '').matchAll(/\b((?:FAC|FA0\d)-20\d{2}-\d+) ([\d\s  ]+,\d{2}) €/g)].map((m) => [m[1], Number(m[2].replace(/[^\d,]/g, '').replace(',', '.'))]));
+  const citees = aff.length ? [] : [...new Set((l.detail || '').match(REF_RE) || [])].map((ref) => ({ ref, inv: parRef.get(ref), montant: parRef.get(ref)?.reste ?? montantsCites[ref] ?? null }));
+  for (const x of aff) x.du ??= x.inv?.reste ?? null;
+  return { aff, citees };
+}
+
+/** Texte proposé selon le motif « À vérifier » (modifiable dans la fenêtre avant l'envoi). */
+function brouillonEmail(l) {
+  const { aff, citees } = facturesDeLigne(l);
+  const k = PB[l.probleme];
+  const liste = (xs, f) => xs.map((x) => `- ${x.ref}${f(x) ? ' : ' + f(x) : ''}`).join('\n');
+  const P = [`Nous avons bien reçu votre virement du ${dfr(l.date)} d'un montant de ${eur(l.credit)} et nous vous en remercions.`];
+  let consigne = true;
+  if (aff.length) {
+    P[0] += aff.length === 1 ? ` Il a bien été pris en compte et affecté à la facture ${aff[0].ref}.`
+      : ` Il a bien été pris en compte et affecté aux factures suivantes :\n${liste(aff, (x) => eur(x.montant))}`;
+    if (k === 'partiel') {
+      const restes = aff.map((x) => ({ ...x, reste: x.du != null ? r2(x.du - x.montant) : null })).filter((x) => x.reste > 0.005);
+      if (restes.length === 1) P.push(`Le montant dû sur cette facture étant de ${eur(restes[0].du)}, il reste ${eur(restes[0].reste)} à régler. Merci d'effectuer ce complément en indiquant le numéro de facture ${restes[0].ref} dans le libellé du virement.`);
+      if (restes.length > 1) P.push(`Il reste à régler :\n${liste(restes, (x) => eur(x.reste))}\nMerci d'effectuer ces compléments en indiquant les numéros de facture dans le libellé du virement.`);
+      if (restes.length) consigne = false;
+    }
+    const surplus = r2(l.credit - aff.reduce((s, x) => s + x.montant, 0));
+    if (k === 'trop' && surplus >= 0.01) P.push(`Le montant reçu dépasse de ${eur(surplus)} le montant dû : cette somme est conservée à votre crédit et sera déduite de votre prochaine facture, sauf demande contraire de votre part.`);
+    if (k === 'confirmer') P.push('Si ce virement concernait une autre facture, merci de nous le signaler en réponse à ce message.');
+  } else if (k === 'doublon' && citees.length) {
+    P.push(`Le libellé de ce virement mentionne ${citees.length > 1 ? `les factures ${citees.map((x) => x.ref).join(', ')}, qui sont déjà réglées` : `la facture ${citees[0].ref}, qui est déjà réglée`} dans nos comptes. Pourriez-vous nous indiquer à quelle facture ce paiement se rapporte ? Nous l'affecterons dès réception de votre réponse.`);
+  } else if (k === 'different' && citees.length) {
+    P.push(`Son montant ne correspond cependant pas à vos factures en attente de règlement :\n${liste(citees, (x) => (x.montant != null ? eur(x.montant) : ''))}\nPourriez-vous nous indiquer à quelle(s) facture(s) ce virement se rapporte ? Nous l'affecterons dès réception de votre réponse.`);
+  } else {
+    P.push(`Nous ne parvenons pas à l'associer à une facture (libellé du virement : « ${l.texte.slice(0, 140)} »). Pourriez-vous nous indiquer à quelle(s) facture(s) il se rapporte ? Nous l'affecterons dès réception de votre réponse.`);
+  }
+  const exemple = (aff[0] || citees[0])?.ref;
+  if (consigne) P.push(`Afin que vos règlements soient traités correctement par notre comptabilité, merci d'indiquer à l'avenir le numéro de chaque facture réglée dans le libellé de vos virements${exemple ? ` (par exemple : ${exemple})` : ''}.`);
+  const refs = (aff.length ? aff : citees).map((x) => x.ref);
+  return {
+    objet: `Votre virement du ${dfr(l.date)} de ${eur(l.credit)}${refs.length ? ' — ' + refs.slice(0, 3).join(', ') + (refs.length > 3 ? '…' : '') : ''}`,
+    texte: ['Bonjour,', ...P, 'Je reste bien entendu à votre écoute pour toute question.', 'Bien cordialement,', RL.SIGNATURE].join('\n\n'),
+    refs, aff, citees,
   };
+}
+
+function emailVirement(id) {
+  const l = S.lines.find((x) => x.id === id); if (!l) return;
+  const b = brouillonEmail(l);
+  const invs = [...b.aff, ...b.citees].map((x) => x.inv).filter(Boolean);
+  const aChercher = [...b.aff, ...b.citees].map((x) => (x.uuid && x.space ? { uuid: x.uuid, space: x.space } : x.inv ? { uuid: x.inv.uuid, space: x.inv.space } : null)).filter(Boolean);
+  const client = b.aff[0]?.client || invs[0]?.client || (l.props || [])[0]?.client || '';
+  emailBox({
+    cle: l.id, type: 'virement', op_id: l.id, motif: l.probleme, client, group_uuid: invs[0]?.group_uuid || null,
+    factures: b.refs, montant: l.credit, date_virement: l.date, destinataires: [...new Set(invs.flatMap((i) => i.contacts || []))], aChercher,
+    objet: b.objet, texte: b.texte,
+    resume: `<span>Virement</span><b>${eur(l.credit)} du ${dfr(l.date)}</b><span>Motif</span><b>${esc(l.probleme)}${isOk(l) ? ' · pointé' : ''}</b>${client ? `<span>Client</span><b>${esc(client)}</b>` : ''}`,
+  });
+}
+
+/** Fenêtre d'email : destinataires, objet et texte modifiables, puis « Envoyer ». */
+function emailBox(ctx) {
+  const d = BROUILLONS[ctx.cle] || (BROUILLONS[ctx.cle] = { a: ctx.destinataires.join(', '), objet: ctx.objet, texte: ctx.texte, copie: true, modifieA: false, nouveau: true });
+  const repris = !d.nouveau; d.nouveau = false;
+  const m = $('#modal');
+  m.className = 'modal large'; m.dataset.cle = ctx.cle;
+  m.innerHTML = `<h3>Email au client</h3>
+    <div class="kv">${ctx.resume}</div>
+    ${(ctx.type === 'avance' ? aEnvoye(ctx.avance_id, 'avance_id') : aEnvoye(ctx.op_id)) ? `<div class="warn">Un email a déjà été envoyé pour cette ligne : vérifiez le journal avant d'en envoyer un autre.</div>` : ''}
+    <div class="emailform">
+      <label for="em-a">À <span class="sub" id="em-a-info"></span></label>
+      <input class="t" id="em-a" value="${esc(d.a)}" placeholder="adresse@client.fr, autre@client.fr" autocomplete="off">
+      <label for="em-objet">Objet</label><input class="t" id="em-objet" value="${esc(d.objet)}" maxlength="200">
+      <label for="em-texte">Message</label><textarea id="em-texte" rows="15">${esc(d.texte)}</textarea>
+      <label class="check"><input type="checkbox" id="em-copie" ${d.copie ? 'checked' : ''}> M'envoyer une copie (${esc(USER.email)})</label>
+      <p class="sub">Expéditeur : The Bureau &lt;comptabilite@notifications.thebureau.paris&gt; · les réponses arrivent à patrick.bellaiche@thebureau.paris</p>
+      <div class="errmsg" id="em-err"></div>
+    </div>
+    <div class="row">${repris ? '<button class="link" id="em-reset">Revenir au texte proposé</button><span class="spacer"></span>' : ''}<button class="btn" onclick="A.fermer()">Annuler</button><button class="btn primary" id="em-ok">Envoyer</button></div>`;
+  const sauver = () => { d.a = $('#em-a').value; d.objet = $('#em-objet').value; d.texte = $('#em-texte').value; d.copie = $('#em-copie').checked; };
+  for (const s of ['#em-a', '#em-objet', '#em-texte']) $(s).addEventListener('input', sauver);
+  $('#em-copie').addEventListener('change', sauver);
+  $('#em-a').addEventListener('input', () => { d.modifieA = true; });
+  $('#em-reset')?.addEventListener('click', () => { delete BROUILLONS[ctx.cle]; emailBox(ctx); });
+  $('#em-ok').onclick = () => envoyerEmail(ctx, d);
   $('#mbg').classList.add('show');
+  const info = (t) => { if (m.dataset.cle === ctx.cle && $('#em-a-info')) $('#em-a-info').textContent = t; };
+  if (d.adressesArchie) info(d.adressesArchie);
+  else if (!ctx.aChercher.length) info(d.a ? '' : '— aucune facture identifiée : saisissez l\'adresse du client');
+  else {
+    info('— recherche des adresses de facturation dans Archie…');
+    sb.functions.invoke('email-client', { body: { quoi: 'destinataires', factures: ctx.aChercher } }).then(async ({ data, error }) => {
+      if (error) { info(`— ${await erreurFonction(error)}`); return; }
+      if (!ctx.client && data.client) ctx.client = data.client;
+      if (!ctx.group_uuid && data.group_uuid) ctx.group_uuid = data.group_uuid;
+      if (!d.modifieA) {
+        d.a = [...new Set([...adresses(d.a), ...(data.destinataires || [])])].join(', ');
+        if (m.dataset.cle === ctx.cle && $('#em-a')) $('#em-a').value = d.a;
+      }
+      d.adressesArchie = data.destinataires?.length ? '— adresses de facturation lues dans Archie' : "— aucune adresse de facturation dans Archie : saisissez-la";
+      info(d.adressesArchie);
+    }).catch((e) => info(`— ${e.message}`));
+  }
+  setTimeout(() => (d.a ? $('#em-texte') : $('#em-a'))?.focus(), 50);
+}
+
+async function envoyerEmail(ctx, d) {
+  if (EMAIL_EN_COURS) return;
+  const err = (t) => { const e = $('#em-err'); if (e) e.textContent = t; };
+  const dest = adresses(d.a);
+  if (!dest.length) return err('Indiquez au moins une adresse email.');
+  const fausse = dest.find((x) => !EMAIL_RE.test(x));
+  if (fausse) return err(`Adresse non valide : ${fausse}`);
+  if (!d.objet.trim()) return err("Indiquez l'objet de l'email.");
+  if (d.texte.trim().length < 10) return err('Le message est vide.');
+  const b = $('#em-ok');
+  EMAIL_EN_COURS = true; b.disabled = true; b.textContent = 'Envoi…'; err('');
+  let data = null, msg = null;
+  try {
+    const r = await sb.functions.invoke('email-client', { body: {
+      quoi: 'envoyer', type: ctx.type, op_id: ctx.op_id, avance_id: ctx.avance_id, releve_id: S?.releve?.id, motif: ctx.motif,
+      client: ctx.client, group_uuid: ctx.group_uuid, factures: ctx.factures, montant: ctx.montant, date_virement: ctx.date_virement,
+      destinataires: dest, copie_moi: d.copie, objet: d.objet.trim(), texte: d.texte,
+    } });
+    if (r.error) {
+      const j = await r.error.context?.json?.().catch(() => null);
+      msg = j?.error || r.error.message; data = j;
+    } else data = r.data;
+  } catch (e) { msg = e.message; } finally { EMAIL_EN_COURS = false; }
+  if (data?.email && S) S.emails = [...(S.emails || []).filter((e) => e.id !== data.email.id), data.email];
+  if (!msg && data?.email?.statut === 'ok') {
+    delete BROUILLONS[ctx.cle];
+    closeM(); renderBody();
+    toast(`Email envoyé à ${dest.join(', ')}`);
+    return;
+  }
+  if (b.isConnected) { b.disabled = false; b.textContent = 'Envoyer'; }
+  err(`Email non envoyé : ${msg || 'réponse illisible'}`);
+  renderBody();
+}
+
+// ---- journal des emails envoyés : période, tri par date, recherche
+const JE = { periode: '30j', du: '', au: '', tri: 'desc' };
+const jourParis = (iso) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Paris', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(iso));
+function bornesPeriode() {
+  const auj = jourParis(new Date().toISOString());
+  const decale = (n) => jourParis(new Date(Date.now() - n * 86400000).toISOString());
+  const [a, m] = [Number(auj.slice(0, 4)), Number(auj.slice(5, 7))];
+  const moisPrec = m === 1 ? `${a - 1}-12` : `${a}-${String(m - 1).padStart(2, '0')}`;
+  const finMois = (ym) => { const [y, mm] = ym.split('-').map(Number); return `${ym}-${String(new Date(Date.UTC(y, mm, 0)).getUTCDate()).padStart(2, '0')}`; };
+  switch (JE.periode) {
+    case 'jour': return [auj, auj];
+    case '7j': return [decale(6), auj];
+    case '30j': return [decale(29), auj];
+    case 'mois': return [auj.slice(0, 8) + '01', auj];
+    case 'moisprec': return [moisPrec + '-01', finMois(moisPrec)];
+    case 'tout': return ['', ''];
+    default: return [JE.du, JE.au];
+  }
+}
+function emailsView() {
+  const [du, au] = bornesPeriode();
+  const q = Q.toLowerCase();
+  const L = (S.emails || []).filter((e) => {
+    const j = jourParis(e.envoye_le || e.cree_le);
+    if ((du && j < du) || (au && j > au)) return false;
+    return !q || [e.client, e.objet, e.motif, e.par_email, ...(e.destinataires || []), ...(e.factures || []), e.montant].join(' ').toLowerCase().includes(q);
+  }).sort((a, b) => (JE.tri === 'asc' ? 1 : -1) * ((a.envoye_le || a.cree_le).localeCompare(b.envoye_le || b.cree_le) || a.id - b.id));
+  const P = [['jour', "Aujourd'hui"], ['7j', '7 derniers jours'], ['30j', '30 derniers jours'], ['mois', 'Ce mois-ci'], ['moisprec', 'Mois précédent'], ['tout', 'Tout']];
+  const nOk = L.filter((e) => e.statut === 'ok').length;
+  let h = `<div class="section">Emails envoyés<small>${nOk} email(s) envoyé(s)${L.length > nOk ? ` · ${L.length - nOk} non envoyé(s)` : ''} sur la période</small></div>
+    <div class="periode">${P.map(([k, t]) => `<button class="chip ${JE.periode === k ? 'on' : ''}" onclick="A.periode('${k}')">${t}</button>`).join(' ')}
+      <span class="sub">ou du</span><input type="date" id="je-du" value="${esc(du)}" onchange="A.periodeLibre()"><span class="sub">au</span><input type="date" id="je-au" value="${esc(au)}" onchange="A.periodeLibre()"></div>
+    <table><thead><tr><th style="width:150px"><button class="link tri" onclick="A.triEmails()">Date ${JE.tri === 'asc' ? '▲' : '▼'}</button></th><th>Client</th><th>Destinataires</th><th>Objet</th><th>Motif</th><th>Envoyé par</th><th class="num">Statut</th></tr></thead><tbody>`;
+  if (!L.length) h += `<tr><td colspan="7" class="empty">${S.emails ? 'Aucun email sur cette période.' : 'Chargement…'}</td></tr>`;
+  for (const e of L) {
+    h += `<tr class="clic" onclick="A.voirEmail(${e.id})"><td class="date">${quandFr(e.envoye_le || e.cree_le)}</td>
+      <td><div class="strong">${esc(e.client || '—')}</div>${e.montant ? `<div class="sub">${eur(e.montant)}${e.date_virement ? ' · virement du ' + dfr(e.date_virement) : ''}</div>` : ''}</td>
+      <td class="sub">${esc((e.destinataires || []).join(', '))}</td><td>${esc(e.objet)}</td><td class="sub">${esc(e.motif || '')}</td>
+      <td class="sub">${esc(nomDepuisEmail(e.par_email))}</td>
+      <td class="num">${e.statut === 'ok' ? '<span class="badge b-ok">Envoyé</span>' : e.statut === 'erreur' ? `<span class="badge b-partiel" title="${esc(e.erreur || '')}">Échec</span>` : '<span class="badge b-inconnu">En cours</span>'}</td></tr>`;
+  }
+  return h + `</tbody></table>`;
+}
+async function voirEmail(id) {
+  const e = (S.emails || []).find((x) => x.id === id); if (!e) return;
+  const m = $('#modal');
+  m.className = 'modal large'; m.dataset.cle = '';
+  m.innerHTML = `<h3>${esc(e.objet)}</h3><div class="kv"><span>${e.statut === 'ok' ? 'Envoyé le' : 'Tenté le'}</span><b>${quandFr(e.envoye_le || e.cree_le)} par ${esc(e.par_email)}</b>
+    <span>À</span><b>${esc((e.destinataires || []).join(', '))}</b>${(e.copie || []).length ? `<span>Copie cachée</span><b>${esc(e.copie.join(', '))}</b>` : ''}
+    <span>Client</span><b>${esc(e.client || '—')}</b>${e.factures?.length ? `<span>Factures</span><b>${esc(e.factures.join(', '))}</b>` : ''}<span>Motif</span><b>${esc(e.motif || '—')}</b>
+    ${e.statut === 'erreur' ? `<span>Erreur</span><b class="errmsg">${esc(e.erreur || '')}</b>` : ''}</div>
+    <pre class="mailtexte" id="em-voir">Chargement…</pre><div class="row"><button class="btn" onclick="A.fermer()">Fermer</button></div>`;
+  $('#mbg').classList.add('show');
+  const { data, error } = await sb.from('emails_envoyes').select('texte').eq('id', id).single();
+  const p = $('#em-voir'); if (p) p.textContent = error ? `Texte illisible : ${error.message}` : data.texte;
 }
 function propsFor(l) {
   const o = OVR[l.id];
@@ -1182,7 +1420,11 @@ function annulerBox(id) {
   $('#mok').onclick = () => { closeM(); demanderAnnulation(id); };
   $('#mbg').classList.add('show');
 }
-function closeM() { $('#mbg').classList.remove('show'); }
+function closeM() {
+  if (EMAIL_EN_COURS) return; // pas de fermeture pendant l'envoi d'un email (le résultat s'affiche dans la fenêtre)
+  $('#mbg').classList.remove('show');
+  const m = $('#modal'); m.className = 'modal'; m.dataset.cle = '';
+}
 // (Le bouton « Clôturer le relevé » a été retiré le 27/11/2026 à la demande de Charles : déposer un nouveau relevé
 //  remplace déjà l'ancien. Le statut « clos » reste reconnu au chargement, au cas où un relevé le porterait.)
 function remplirFactures() { $('#invlist').innerHTML = (S?.invoices || []).map((i) => `<option value="${esc(invLabel(i))}">`).join(''); }
@@ -1198,7 +1440,11 @@ window.A = {
   togAll: (on) => { inTab('pret').filter(match).filter((l) => !isOk(l) && !isBusy(l)).forEach((l) => (on ? SEL.add(l.id) : SEL.delete(l.id))); renderBody(); },
   filtre: (k, v) => { FILT[k] = v; renderBody(); },
   pick: (id, on) => { if (on) PICK.add(id); else { PICK.delete(id); delete OVR[id]; } renderBody(); },
-  choisir, montant, validerUne, refuserBox, annulerBox, impMontant, imputerBox, emailBox,
+  choisir, montant, validerUne, refuserBox, annulerBox, impMontant, imputerBox, emailAvance, emailVirement, voirEmail,
+  emails: () => { TAB = 'emails'; SEL = new Set(); render(); chargerEmails(); },
+  periode: (k) => { JE.periode = k; renderBody(); },
+  periodeLibre: () => { JE.periode = 'libre'; JE.du = $('#je-du').value; JE.au = $('#je-au').value; renderBody(); },
+  triEmails: () => { JE.tri = JE.tri === 'asc' ? 'desc' : 'asc'; renderBody(); },
   actualiserRelances, exclureBox, reintegrer, revoquer, enregistrerModele, validerModele, changerLien,
   lienSuivi: () => lienSuiviBox(),
   vueRelances: async (v) => {
@@ -1218,6 +1464,7 @@ $('#b-deposer').addEventListener('click', () => $('#fichier').click());
 $('#fichier').addEventListener('change', (e) => deposer(e.target.files[0]));
 $('#b-reload').addEventListener('click', () => A.relire());
 $('#b-excel').addEventListener('click', () => excelBox());
+$('#b-emails').addEventListener('click', () => A.emails());
 $('#b-out').addEventListener('click', async () => { await sb.auth.signOut(); courant = null; vueConnexion(); });
 $('#mbg').addEventListener('click', (e) => { if (e.target.id === 'mbg') closeM(); });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeM(); });

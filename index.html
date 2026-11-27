@@ -75,7 +75,7 @@ td{padding:10px 10px;border-bottom:1px solid var(--line);vertical-align:top}
 tr:hover td{background:#FCFCFD}
 td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
 td.date{white-space:nowrap;color:var(--ink2)}
-.lib{color:var(--mute);font-size:12.5px;max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lib{color:var(--mute);font-size:12.5px;max-width:460px;white-space:normal;overflow-wrap:anywhere}
 .strong{font-weight:600}
 .ref{font-family:Consolas,"SF Mono",monospace;font-size:12.5px}
 .sub{font-size:12px;color:var(--mute)}
@@ -124,7 +124,22 @@ td.propcell{max-width:360px;min-width:260px}
 .section small{font-weight:400;color:var(--mute);font-size:13px;margin-left:6px}
 .modal-bg{position:fixed;inset:0;background:rgba(17,24,39,.35);display:none;align-items:center;justify-content:center;z-index:50}
 .modal-bg.show{display:flex}
-.modal{background:#fff;border-radius:14px;width:520px;max-width:92vw;padding:24px;box-shadow:0 20px 50px rgba(0,0,0,.2)}
+.modal{background:#fff;border-radius:14px;width:520px;max-width:92vw;max-height:94vh;overflow:auto;padding:24px;box-shadow:0 20px 50px rgba(0,0,0,.2)}
+.modal.large{width:780px}
+.modal .row{align-items:center}
+.emailform label{display:block;font-size:12.5px;font-weight:600;color:var(--ink2);margin:12px 0 4px}
+.emailform label .sub{font-weight:400}
+.emailform label.check{display:flex;gap:8px;align-items:center;font-weight:400;font-size:13px}
+.emailform input.t{width:100%;border:1px solid var(--line);border-radius:8px;padding:8px 10px}
+.emailform textarea{margin-top:0;font-size:13.5px;line-height:1.5}
+.mail{font-size:12px;margin-top:4px;color:var(--ink2)} .mail.ok{color:var(--green)} .mail.ko{color:var(--red)}
+.periode{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:4px 0 12px}
+.periode input[type=date]{border:1px solid var(--line);border-radius:8px;padding:4px 8px;font-size:13px}
+tr.clic{cursor:pointer}
+button.tri{font-size:11.5px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--ink2)}
+pre.mailtexte{white-space:pre-wrap;font:13.5px/1.5 "Segoe UI",system-ui,Arial,sans-serif;background:var(--soft);border:1px solid var(--line);border-radius:8px;padding:12px 14px;max-height:52vh;overflow:auto;margin:10px 0 0}
+.b-ok{background:var(--green-l);color:var(--green)}
+#b-emails.on{background:var(--ink);border-color:var(--ink);color:#fff}
 .modal h3{margin:0 0 8px;font-size:18px}
 .modal p{color:var(--ink2);margin:6px 0}
 .modal .row{display:flex;justify-content:flex-end;gap:8px;margin-top:20px}
@@ -154,6 +169,7 @@ td.propcell{max-width:360px;min-width:260px}
   <button class="btn" id="b-deposer" hidden>Déposer un relevé</button>
   <button class="btn" id="b-reload" hidden title="Relit Archie et refait le rapprochement">Actualiser</button>
   <button class="btn" id="b-excel" hidden>Excel</button>
+  <button class="btn" id="b-emails" hidden title="Journal des emails envoyés aux clients">Emails envoyés</button>
   <span class="compte" id="who"></span>
   <button class="btn" id="b-out" hidden>Se déconnecter</button>
 </div></header>
@@ -177,6 +193,6 @@ td.propcell{max-width:360px;min-width:260px}
 <script src="config.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.118.0/dist/umd/supabase.min.js" integrity="sha384-UagCvVPT5XXA0Hx+nJYUAGBFseHT9zBgpJMSebsAxl9lciTwbT+39j5VfRjdP5Tp" crossorigin="anonymous"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js" integrity="sha384-vtjasyidUo0kW94K5MXDXntzOJpQgBKXmE7e2Ga4LG0skTTLeBi97eFAXsqewJjw" crossorigin="anonymous"></script>
-<script type="module" src="js/app.js?v=20261127-5"></script>
+<script type="module" src="js/app.js?v=20261127-6"></script>
 </body>
 </html>
