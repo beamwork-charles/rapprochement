@@ -3,7 +3,7 @@
 // navigateur), ou session d'un compte autorisé de l'outil de pointage (sans mot de passe).
 // Toutes les données passent par la fonction « tableau » ; aucune clé ni donnée dans cette page.
 
-import { calculer, BATIMENTS, CATEGORIES, HORIZON_JOURS, REGLE_OCC, revalorisations, ajouterMois, ajouterJours, PREAVIS_JOURS, codes } from './occupation.js?v=20261127-13';
+import { calculer, BATIMENTS, CATEGORIES, HORIZON_JOURS, REGLE_OCC, revalorisations, ajouterMois, ajouterJours, PREAVIS_JOURS, codes } from './occupation.js?v=20261127-17';
 
 const C = window.CONFIG || {};
 const $ = (s) => document.querySelector(s);
@@ -508,8 +508,9 @@ const RV_STATUTS = {
 };
 const A_TRAITER = new Set(['en_retard', 'a_programmer', 'a_prevenir']);
 let REGLES = null; // règles du classeur (fonction « tableau », quoi: 'regles')
+let VERIFIES = []; // contrats dont les documents ont été lus dans Archie (contrats_verifies)
 async function chargerRegles() {
-  try { REGLES = (await appel('regles')).regles || []; RV_CACHE = { inst: null, rows: null }; rendu(); }
+  try { const r = await appel('regles'); REGLES = r.regles || []; VERIFIES = r.verifies || []; RV_CACHE = { inst: null, rows: null }; rendu(); }
   catch (e) { if (!sessionPerdue(e)) REGLES = []; }
 }
 const MOIS = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'];
@@ -518,7 +519,7 @@ let RV_CACHE = { inst: null, rows: null };
 function lignesRevalo() {
   const I = OCC?.inst;
   if (!I?.donnees?.clients) return null;
-  if (RV_CACHE.inst !== I) RV_CACHE = { inst: I, rows: revalorisations(I.donnees.clients, aujourdhuiParis(), REGLES || []) };
+  if (RV_CACHE.inst !== I) RV_CACHE = { inst: I, rows: revalorisations(I.donnees.clients, aujourdhuiParis(), REGLES || [], VERIFIES) };
   return RV_CACHE.rows;
 }
 
@@ -557,7 +558,7 @@ function vueRevalo() {
     <tr><td>Anniversaires sans hausse programmée</td>${mois.map((m) => `<td class="num">${A[m].length || '–'}</td>`).join('')}</tr>
     </tbody></table></div></details>`;
   const nRegles = RV.filter((r) => r.regle).length;
-  h += `<p class="note">La hausse tombe 12 mois après la dernière revalorisation inscrite dans Archie (calendrier des prix), jamais d'après le classeur ; sans revalorisation, à l'anniversaire du contrat (date de début dans Archie, ou date du classeur pour les contrats saisis au 01/05/2021). « À programmer » : hausses du mois suivant seulement. « À prévenir » : contrats avec préavis dont la date limite pour prévenir le client tombe d'ici la fin du mois suivant. « avenant ? » : la dernière hausse ne tombe pas à l'anniversaire du contrat, à vérifier. Le classeur « Recap +3% Contrats »${REGLES ? ` (${REGLES.length} lignes, rapprochées de ${nRegles} contrats)` : ''} sert seulement pour les préavis, blocages et plafonds.</p><div style="height:60px"></div>`;
+  h += `<p class="note">La hausse tombe 12 mois après la dernière revalorisation inscrite dans Archie (calendrier des prix), jamais d'après le classeur ; sans revalorisation, à l'anniversaire du contrat (date de début dans Archie, ou date du classeur pour les contrats saisis au 01/05/2021). « À programmer » : hausses du mois suivant seulement. « À prévenir » : contrats avec préavis dont la date limite pour prévenir le client tombe d'ici la fin du mois suivant. « avenant ? » : la dernière hausse ne tombe pas à l'anniversaire du contrat et ses documents n'ont pas encore été lus ; « contrat lu » : documents et avenants lus dans Archie (${VERIFIES.length} contrats), la date du contrat lue prévaut sur celle d'Archie. Le classeur « Recap +3% Contrats »${REGLES ? ` (${REGLES.length} lignes, rapprochées de ${nRegles} contrats)` : ''} sert seulement pour les préavis, blocages et plafonds.</p><div style="height:60px"></div>`;
   return h;
 }
 
@@ -584,7 +585,7 @@ function lignesRevaloTable() {
       <td><b>${esc(r.client)}</b></td>
       <td>${esc(r.batiment)}</td>
       <td>${esc(bureau)}</td>
-      <td style="white-space:nowrap">${r.derniere ? dfr(r.derniere) : '<span class="faible" title="Aucune hausse dans le calendrier des prix d’Archie">aucune</span>'}${r.hors_anniversaire ? `<div class="sub neg" title="La dernière hausse ne tombe pas à l'anniversaire du contrat : en général un avenant, à vérifier">avenant ? contrat du ${dfr(r.date_contrat)}</div>` : ''}</td>
+      <td style="white-space:nowrap">${r.derniere ? dfr(r.derniere) : '<span class="faible" title="Aucune hausse dans le calendrier des prix d’Archie">aucune</span>'}${r.hors_anniversaire ? (r.verifie ? `<div class="sub" title="${esc(r.verifie.detail)}">contrat du ${dfr(r.date_contrat)} lu : ${esc(r.verifie.conclusion)}</div>` : `<div class="sub neg" title="La dernière hausse ne tombe pas à l'anniversaire du contrat : en général un avenant, à vérifier">avenant ? contrat du ${dfr(r.date_contrat)}</div>`) : ''}</td>
       <td class="num">${eur(r.loyer)}</td>
       <td style="white-space:nowrap">${preavis}</td>
       <td style="white-space:nowrap">${r.fin ? dfr(r.fin) : '<span class="faible">–</span>'}</td>

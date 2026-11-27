@@ -199,12 +199,16 @@ export const HAUSSE_FACTUREE = { min: 0.5, max: 6.5 }; // % : au-delà, c'est un
 /**
  * Dernière hausse réellement facturée par abonnement, d'après les factures d'Archie (cycles complets, montant HT remisé) :
  * premier mois facturé plus cher que le précédent de 0,5 % à 6,5 %. Voit aussi les hausses faites en réduisant la remise,
- * que la grille de prix ignore. lignes : [abonnement, début de période, montant].
+ * que la grille de prix ignore. lignes : [client (groupe), libellé, début de période, montant].
  */
+// clé = bureaux du libellé (« B511/B512 » et « B511-B512 » sont le même contrat ; les lettres A à D identifient le bâtiment, donc le code
+// suffit même si le client a changé d’entité), sinon client + libellé. Une hausse antérieure au contrat est écartée par revalorisations().
+export const cleFacture = (groupe, libelle) => { const c = codes(libelle); return c.length ? [...c].sort().join(',') : (groupe || '') + '|' + norm(libelle); };
 export function haussesFacturees(lignes, aujourdhui) {
   const parAbo = new Map();
-  for (const [sub, debut, m] of lignes || []) {
-    if (!sub || !debut || !(m > 0) || debut > aujourdhui) continue;
+  for (const [groupe, libelle, debut, m] of lignes || []) {
+    if (!libelle || !debut || !(m > 0) || debut > aujourdhui) continue;
+    const sub = cleFacture(groupe, libelle);
     if (!parAbo.has(sub)) parAbo.set(sub, new Map());
     const mois = parAbo.get(sub); mois.set(debut, Math.max(mois.get(debut) || 0, m));
   }
@@ -258,7 +262,7 @@ function calculerClients(abos, groupes, espaces, aujourdhui, facturees = new Map
         loyer: arrondi(loyer(a)), prix: a.prix, remise: a.remise, fin_remise: a.fin_remise, a_venir: !actifLe(a, aujourdhui),
         bureaux: a.bureaux.map((u) => espaces.get(u)?.nom).filter(Boolean),
         prochaine_hausse: h.prochaine, derniere_hausse: h.derniere,
-        derniere_facture: facturees.get(a.uuid)?.date ?? null, pct_facture: facturees.get(a.uuid)?.pct ?? null,
+        derniere_facture: facturees.get(cleFacture(a.group_uuid, a.nom))?.date ?? null, pct_facture: facturees.get(cleFacture(a.group_uuid, a.nom))?.pct ?? null,
       };
     });
     const prochaines = lignes.map((l) => l.prochaine_hausse).filter(Boolean).sort((a, b) => a.date.localeCompare(b.date));
@@ -355,25 +359,36 @@ export function regleDe(a, client, regles) {
  *   a_prevenir   : anniversaire proche (70 jours avec préavis de 2 mois, 30 jours sans préavis) ;
  *   a_jour.
  */
-export function revalorisations(clients, aujourdhui, regles = []) {
+export function revalorisations(clients, aujourdhui, regles = [], verifies = []) {
   const rows = [];
   for (const c of clients || []) {
     for (const a of c.abonnements || []) {
       if (a.a_venir || !(a.loyer > 0)) continue;
       const r = regleDe(a, c.nom, regles);
-      // Dernière revalorisation : uniquement celle inscrite dans Archie (calendrier des prix), jamais le classeur (règle de Charles,
-      // 27/11/2026). La hausse suivante tombe 12 mois après elle ; sans revalorisation, à l'anniversaire du contrat.
-      // grille et factures : une hausse facturée moins de 45 jours après celle de la grille est la même (on garde la date de la
-      // grille) ; plus tard, ou sans hausse dans la grille, c'est une hausse faite par la remise : on garde le mois facturé.
-      const grille = a.derniere_hausse || null, facture = a.derniere_facture || null;
-      const derniere = facture && (!grille || ecart(facture, grille) > TOLERANCE_JOURS) ? facture : grille || facture;
-      const derniereSource = !derniere ? null : derniere === grille ? 'grille' : 'factures';
+      // Contrat dont les documents ont été lus (contrats_verifies) : sa date prévaut sur celle d'Archie.
+      const mesCodes = new Set((a.bureaux || []).flatMap((b) => { const c = codes(b); return c.length ? c : [norm(b)]; }));
+      const verifie = (verifies || []).find((v) => v.batiment === a.batiment && (v.bureaux || []).some((b) => mesCodes.has(b))) || null;
       // Date du contrat : début de l'abonnement Archie, sauf pour les contrats antérieurs à Archie, saisis au 01/05/2021
       // (date de migration) : la vraie date est alors celle du classeur (« Date début contrat / avenant »).
-      const dateContrat = a.debut === DATE_MIGRATION_ARCHIE && r?.date_contrat && r.date_contrat < a.debut ? r.date_contrat : a.debut;
-      const { echue, suivante } = anniversaires(derniere || dateContrat, aujourdhui);
-      // dernière hausse loin de l'anniversaire du contrat : en général un avenant, à vérifier
+      const dateContrat = verifie?.date_contrat || (a.debut === DATE_MIGRATION_ARCHIE && r?.date_contrat && r.date_contrat < a.debut ? r.date_contrat : a.debut);
+      // Dernière revalorisation : uniquement celle inscrite dans Archie, jamais le classeur (règle de Charles, 27/11/2026).
+      // Grille et factures : une hausse facturée moins de 45 jours après celle de la grille est la même (on garde la date de la
+      // grille) ; plus tard, ou sans hausse dans la grille, c'est une hausse faite par la remise : on garde le mois facturé.
+      // Une hausse datée de moins de 9 mois après le contrat (ou avant lui) n'est pas une revalorisation : mise en place du prix.
+      const apresContrat = (d) => d && (!dateContrat || d >= ajouterJours(dateContrat, 270)) ? d : null;
+      const grille = apresContrat(a.derniere_hausse), facture = apresContrat(a.derniere_facture);
+      const derniere = facture && (!grille || ecart(facture, grille) > TOLERANCE_JOURS) ? facture : grille || facture;
+      const derniereSource = !derniere ? null : derniere === grille ? 'grille' : 'factures';
+      // dernière hausse loin de l'anniversaire du contrat (plus de 45 jours) : en général un avenant, à vérifier ; c'est alors
+      // elle qui fixe la date suivante. Une hausse simplement faite un peu tard ou en avance (Twitter : contrat du 01/12,
+      // hausse saisie le 30/12) garde l'anniversaire du contrat.
       const horsAnniversaire = !!(derniere && dateContrat && ecartAnniversaire(derniere, dateContrat) > TOLERANCE_JOURS);
+      const reference = horsAnniversaire ? derniere : dateContrat;
+      let { echue, suivante } = anniversaires(reference, aujourdhui);
+      // l'échéance passée est couverte si une hausse a été faite autour d'elle (±45 jours) ou après
+      if (echue && derniere && derniere >= ajouterJours(echue, -TOLERANCE_JOURS)) echue = null;
+      // hausse faite un peu avant l'anniversaire à venir : elle compte pour cet anniversaire
+      if (suivante && derniere && derniere >= ajouterJours(suivante, -TOLERANCE_JOURS)) suivante = ajouterMois(suivante, 12);
       const limite = finMoisSuivant(aujourdhui); // on ne programme que les hausses du mois suivant (en novembre : celles de décembre)
       const preavis = r?.preavis_mois || 0;
       let anniv = echue || suivante;
@@ -417,6 +432,7 @@ export function revalorisations(clients, aujourdhui, regles = []) {
         cle: c.cle, client: c.nom, contrat: a.nom, batiment: a.batiment, cat: a.cat, bureaux: a.bureaux,
         loyer: a.loyer, remise: a.remise, fin_remise: a.fin_remise, debut: a.debut, date_contrat: dateContrat, fin: a.fin,
         derniere, derniere_source: derniereSource, hors_anniversaire: horsAnniversaire,
+        verifie: verifie ? { conclusion: verifie.conclusion, detail: verifie.detail || '', date_contrat: verifie.date_contrat || null } : null,
         prochaine: a.prochaine_hausse, anniversaire: anniv, anniversaire_contrat: suivante, echue, statut, retard, gain, motif,
         regle: r ? { preavis_mois: r.preavis_mois, observations: r.observations, societe: r.societe, bureau: r.bureau } : null,
       });
