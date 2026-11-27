@@ -1,9 +1,9 @@
 // Écran « Pointage » : connexion, dépôt du relevé, analyse (moteur dans le navigateur), validation vers Archie.
 // Portage de src_reference/ui/index.html + server.py sur Supabase.
-import { lireReleve } from './releve.js?v=20261126-19';
-import * as E from './engine.js?v=20261126-19';
-import * as RL from './relances.js?v=20261126-19';
-import * as D from './relances-donnees.js?v=20261126-19';
+import { lireReleve } from './releve.js?v=20261127-1';
+import * as E from './engine.js?v=20261127-1';
+import * as RL from './relances.js?v=20261127-1';
+import * as D from './relances-donnees.js?v=20261127-1';
 
 const C = window.CONFIG || {};
 const XLSX = window.XLSX;
@@ -30,9 +30,9 @@ function vue(html) { $('#main').innerHTML = html; }
 function boutons() {
   const co = Boolean(USER), pret = S && S.status === 'ready';
   $('#b-out').hidden = !co; $('#b-deposer').hidden = !co; $('#b-excel').hidden = !co;
-  $('#b-reload').hidden = !co || !S?.releve; $('#b-clore').hidden = !co || !S?.releve;
+  $('#b-reload').hidden = !co || !S?.releve;
   const occupe = !S || S.status === 'loading' || S.sending;
-  $('#b-deposer').disabled = occupe; $('#b-reload').disabled = occupe || !pret || S.archieEnCours; $('#b-clore').disabled = occupe || !pret || S.archieEnCours;
+  $('#b-deposer').disabled = occupe; $('#b-reload').disabled = occupe || !pret || S.archieEnCours;
   $('#b-out').disabled = Boolean(S?.sending); // pas de déconnexion au milieu d'un envoi vers Archie
   $('#who').textContent = USER ? USER.email : '';
 }
@@ -1147,17 +1147,8 @@ function annulerBox(id) {
   $('#mbg').classList.add('show');
 }
 function closeM() { $('#mbg').classList.remove('show'); }
-function clore() {
-  const todo = inTab('pret').filter((l) => !isOk(l)).length + inTab('verif').filter((l) => !isOk(l)).length;
-  confirmBox('Clôturer ce relevé ?', `<p>Le relevé est archivé ; l'écran reviendra à « Aucun relevé à traiter ».</p>${todo ? `<p><b>${todo} ligne(s)</b> restent à traiter : elles réapparaîtront si vous déposez un relevé qui les contient.</p>` : ''}`,
-    'Clôturer', async () => {
-      const { error } = await sb.from('releves').update({ statut: 'clos', clos_le: new Date().toISOString() }).eq('id', S.releve.id);
-      if (error) { toast(`Clôture impossible : ${error.message}`); return; }
-      await journal('clôture', { resultat: `Relevé « ${S.releve.fichier} » clôturé` });
-      toast(`Relevé « ${S.releve.fichier} » clôturé.`);
-      await chargerReleve();
-    });
-}
+// (Le bouton « Clôturer le relevé » a été retiré le 27/11/2026 à la demande de Charles : déposer un nouveau relevé
+//  remplace déjà l'ancien. Le statut « clos » reste reconnu au chargement, au cas où un relevé le porterait.)
 function remplirFactures() { $('#invlist').innerHTML = (S?.invoices || []).map((i) => `<option value="${esc(invLabel(i))}">`).join(''); }
 
 // ============================================================================ actions exposées à l'écran
@@ -1190,7 +1181,6 @@ $('#d-valider').addEventListener('click', validerSel);
 $('#b-deposer').addEventListener('click', () => $('#fichier').click());
 $('#fichier').addEventListener('change', (e) => deposer(e.target.files[0]));
 $('#b-reload').addEventListener('click', () => A.relire());
-$('#b-clore').addEventListener('click', clore);
 $('#b-excel').addEventListener('click', () => excelBox());
 $('#b-out').addEventListener('click', async () => { await sb.auth.signOut(); courant = null; vueConnexion(); });
 $('#mbg').addEventListener('click', (e) => { if (e.target.id === 'mbg') closeM(); });
