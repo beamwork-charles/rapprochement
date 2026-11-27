@@ -275,7 +275,19 @@ const ecart = (a, b) => Math.round((Date.parse(a + 'T12:00:00Z') - Date.parse(b 
  *   se_termine : le contrat finit avant son prochain anniversaire.
  * Les hausses obtenues en réduisant la remise ne figurent pas dans la grille et ne sont donc pas vues.
  */
-export const SANS_PREAVIS_JOURS = 30; // contrat sans préavis de revalorisation : à préparer 30 jours avant
+export const SANS_PREAVIS_JOURS = 30; // (ancienne règle) gardé pour compatibilité
+export const A_PROGRAMMER_JOURS = 90; // anniversaire du contrat dans moins de 3 mois : hausse à inscrire dans Archie
+export const TOLERANCE_JOURS = 45; // une hausse à ±45 jours de l'anniversaire compte pour cet anniversaire
+export const DATE_MIGRATION_ARCHIE = '2021-05-01'; // contrats antérieurs à Archie : saisis avec cette date de début
+/** Tarif plafond (HT / mois) : un contrat à ce prix ou au-dessus n'est plus revalorisé ; en dessous, la hausse s'arrête au plafond (règle de Charles, 27/11/2026). */
+export const PLAFONDS_TARIF = { itinerants: 499, coresidents: 725 };
+const dfrLocal = (d) => `${d.slice(8, 10)}/${d.slice(5, 7)}/${d.slice(0, 4)}`;
+/** Anniversaires du contrat : le dernier passé (au moins un an après le début) et le prochain. */
+export function anniversaires(debut, aujourdhui) {
+  if (!debut) return { echue: null, suivante: null };
+  let n = 1; while (ajouterMois(debut, 12 * n) <= aujourdhui) n++;
+  return { echue: n > 1 ? ajouterMois(debut, 12 * (n - 1)) : null, suivante: ajouterMois(debut, 12 * n) };
+}
 
 /** Nom de société comparable : majuscules, sans ponctuation ni forme juridique. */
 export const nomSociete = (s) => String(s ?? '').toUpperCase().replace(/\(.*?\)/g, ' ')
@@ -286,6 +298,13 @@ const SERVICES = { bureau: 'bureaux', 'co-résident': 'coresidents', 'co-residen
 /** Règle du classeur pour un contrat : même bâtiment et même bureau, sinon même société et même type de service. */
 export function regleDe(a, client, regles) {
   const R = (regles || []).filter((r) => r.batiment === a.batiment);
+  // poste de co-résident : la ligne du classeur porte le numéro du poste (« 7 » ↔ « Co-Résident poste n°07 »)
+  const poste = String(a.nom || '').match(/poste\s*n[°o]?\s*0*(\d+)/i);
+  if (a.cat === 'coresidents' && poste) {
+    const n = Number(poste[1]);
+    const P = R.filter((r) => SERVICES[String(r.service || '').toLowerCase()] === 'coresidents' && Number(String(r.bureau).replace(/\D/g, '')) === n);
+    return P.find((r) => memeSociete(r.societe, client)) || P[0] || null;
+  }
   if (a.bureaux?.length) {
     const L = R.filter((r) => codes(r.bureau).some((c) => a.bureaux.some((b) => norm(b) === c || norm(b).startsWith(c))));
     return L.find((r) => memeSociete(r.societe, client)) || L[0] || null;
@@ -312,36 +331,59 @@ export function revalorisations(clients, aujourdhui, regles = []) {
       // dernière hausse : la plus récente entre Archie et le classeur (qui note aussi les hausses par réduction de remise)
       const derniereClasseur = r?.derniere && r.derniere <= aujourdhui ? r.derniere : null;
       const derniere = [a.derniere_hausse, derniereClasseur].filter(Boolean).sort().pop() || null;
-      const base = derniere || a.debut;
-      let anniv = base ? ajouterMois(base, 12) : null;
-      const fenetre = r ? (r.preavis_mois >= 2 ? PREAVIS_JOURS : SANS_PREAVIS_JOURS) : PREAVIS_JOURS;
+      // la revalorisation tombe toujours à l'anniversaire du contrat (date d'entrée en vigueur), chaque année.
+      // Date du contrat : début de l'abonnement Archie, sauf pour les contrats antérieurs à Archie, saisis au 01/05/2021
+      // (date de migration) : la vraie date est alors celle du classeur (« Date début contrat / avenant »).
+      const dateContrat = a.debut === DATE_MIGRATION_ARCHIE && r?.date_contrat && r.date_contrat < a.debut ? r.date_contrat : a.debut;
+      let { echue, suivante } = anniversaires(dateContrat, aujourdhui);
+      // une hausse faite un peu avant l'anniversaire à venir (±45 jours) compte pour cet anniversaire
+      if (suivante && derniere && derniere >= ajouterJours(suivante, -TOLERANCE_JOURS)) { echue = suivante; suivante = ajouterMois(suivante, 12); }
+      const faiteEchue = echue && derniere && derniere >= ajouterJours(echue, -TOLERANCE_JOURS); // hausse faite autour de l'anniversaire échu ou après
+      let anniv = suivante;
+      const fenetre = r?.preavis_mois >= 2 ? PREAVIS_JOURS : A_PROGRAMMER_JOURS;
       const notifiee = r && r.derniere && r.derniere > aujourdhui && /revalo|indexation|notifi/i.test(r.observations || '');
       let statut, retard = null, gain = 0, motif = null;
-      const plusTroisPourcent = Math.round(a.loyer * 3) / 100;
-      if (a.prochaine_hausse) {
+      // itinérants et co-résidents : les anciens contrats moins chers montent de 3 % par an jusqu'au tarif actuel, puis plus rien
+      const plafondTarif = PLAFONDS_TARIF[a.cat] ?? null;
+      const prixContrat = Number(a.prix ?? a.loyer);
+      const auPlafondTarif = plafondTarif != null && prixContrat >= plafondTarif - 0.005;
+      const plusTroisPourcent = plafondTarif != null
+        ? Math.max(0, Math.round(Math.min(prixContrat * 0.03, plafondTarif - prixContrat) * 100) / 100)
+        : Math.round(a.loyer * 3) / 100;
+      if (auPlafondTarif && !a.prochaine_hausse) {
+        statut = 'bloquee'; motif = `Au tarif plafond (${plafondTarif} € HT / mois) : plus de revalorisation`;
+      } else if (a.prochaine_hausse && (!echue || faiteEchue || a.prochaine_hausse.date <= ajouterJours(aujourdhui, A_PROGRAMMER_JOURS))) {
         statut = 'programmee'; anniv = a.prochaine_hausse.date;
         gain = Math.round(a.loyer * a.prochaine_hausse.pct) / 100;
+        if (suivante && Math.abs(ecart(a.prochaine_hausse.date, suivante)) > TOLERANCE_JOURS && Math.abs(ecart(a.prochaine_hausse.date, echue || suivante)) > TOLERANCE_JOURS) {
+          motif = `Programmée au ${dfrLocal(a.prochaine_hausse.date)}, anniversaire du contrat le ${dfrLocal(suivante)}`;
+        }
+        if (plafondTarif != null && a.prochaine_hausse.a > plafondTarif + 0.005) { // la grille d'Archie dépasse le tarif plafond
+          motif = `Dépasse le plafond de ${plafondTarif} € : ${auPlafondTarif ? 'déjà au plafond, hausse à retirer d\'Archie' : `à ramener à ${plafondTarif} € dans Archie`}`;
+          gain = Math.max(0, Math.round((plafondTarif - prixContrat) * 100) / 100);
+        }
       } else if (r && !r.revalorisable) {
         statut = 'bloquee'; motif = 'Pas de revalorisation dans le contrat';
       } else if (r?.plafond) {
         statut = 'bloquee'; motif = 'Au plafond';
       } else if (r?.pas_avant && r.pas_avant > aujourdhui && ecart(r.pas_avant, aujourdhui) > fenetre) {
-        statut = 'bloquee'; motif = `Pas de hausse avant le ${r.pas_avant.slice(8, 10)}/${r.pas_avant.slice(5, 7)}/${r.pas_avant.slice(0, 4)}`; anniv = r.pas_avant;
+        statut = 'bloquee'; motif = `Pas de hausse avant le ${dfrLocal(r.pas_avant)}`; anniv = r.pas_avant;
       } else if (notifiee) {
         statut = 'a_programmer'; anniv = r.derniere; gain = plusTroisPourcent;
-        motif = 'Hausse notifiée (classeur) mais pas programmée dans Archie';
+        motif = 'Hausse notifiée (classeur) mais pas inscrite dans Archie';
+      } else if (echue && !faiteEchue && !(a.fin && a.fin < echue)) {
+        statut = 'en_retard'; anniv = echue; retard = ecart(aujourdhui, echue); gain = plusTroisPourcent;
       } else if (anniv && a.fin && a.fin < anniv) {
         statut = 'se_termine';
-      } else if (anniv && anniv <= aujourdhui) {
-        statut = 'en_retard'; retard = ecart(aujourdhui, anniv); gain = plusTroisPourcent;
       } else if (anniv && ecart(anniv, aujourdhui) <= fenetre) {
-        statut = 'a_prevenir'; gain = plusTroisPourcent;
+        statut = r?.preavis_mois >= 2 ? 'a_prevenir' : 'a_programmer'; gain = plusTroisPourcent;
+        if (statut === 'a_programmer') motif = 'Anniversaire du contrat dans moins de 3 mois, hausse pas encore inscrite dans Archie';
       } else statut = 'a_jour';
       rows.push({
         cle: c.cle, client: c.nom, contrat: a.nom, batiment: a.batiment, cat: a.cat, bureaux: a.bureaux,
-        loyer: a.loyer, remise: a.remise, fin_remise: a.fin_remise, debut: a.debut, fin: a.fin,
+        loyer: a.loyer, remise: a.remise, fin_remise: a.fin_remise, debut: a.debut, date_contrat: dateContrat, fin: a.fin,
         derniere, derniere_source: derniere && derniere === derniereClasseur && derniere !== a.derniere_hausse ? 'classeur' : derniere ? 'archie' : null,
-        prochaine: a.prochaine_hausse, anniversaire: anniv, statut, retard, gain, motif,
+        prochaine: a.prochaine_hausse, anniversaire: anniv, anniversaire_contrat: suivante, echue, statut, retard, gain, motif,
         regle: r ? { preavis_mois: r.preavis_mois, observations: r.observations, societe: r.societe, bureau: r.bureau } : null,
       });
     }
