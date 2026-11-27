@@ -3,8 +3,8 @@
 // Deux façons d'y accéder :
 //   • par lien (…/suivi.html#cle=…) : aucune connexion ; la fonction « suivi » vérifie la clé et ne renvoie que le niveau 5 ;
 //   • connecté avec un compte @thebureau.paris.
-import * as D from './relances-donnees.js?v=20261127-2';
-import * as RL from './relances.js?v=20261127-2';
+import * as D from './relances-donnees.js?v=20261127-3';
+import * as RL from './relances.js?v=20261127-3';
 
 const C = window.CONFIG || {};
 const $ = (s) => document.querySelector(s);
@@ -19,6 +19,8 @@ const estMembre = (e) => String(e || '').toLowerCase().endsWith('@' + C.DOMAINE)
 let sb = null, USER = null, courant;
 let ETAT = null; // { R, chargement, maj, progression, erreur, erreurMaj }
 let TRI = 'retard', Q = '';
+const AUTO_MIN = 10; // minutes entre deux mises à jour automatiques
+const OUVERTS = new Set(); // clients dont la liste de factures est dépliée
 const CLE = new URLSearchParams(location.hash.slice(1)).get('cle'); // lien de suivi sans connexion
 
 // ---------------------------------------------------------------------------- données : toujours par la fonction « suivi »
@@ -63,7 +65,7 @@ async function actualiser() {
     etat.progression = `Lecture d'Archie · ${D.estimation(debut, 0, 1, parPas)}`;
     const e = $('#progression'); if (e && ETAT === etat) e.textContent = etat.progression;
   };
-  etat.maj = true; etat.erreurMaj = null; maj(); rendu();
+  etat.maj = true; etat.erreurMaj = null; etat.dernierEssai = Date.now(); maj(); rendu();
   const tic = setInterval(maj, 1000);
   try {
     const R = await appelSuivi('actualiser');
@@ -118,8 +120,11 @@ function rendu() {
   const etatArchie = ETAT.maj
     ? `<span class="maj"><span class="spin"></span> Mise à jour depuis Archie — <span id="progression">${esc(ETAT.progression || '')}</span></span>`
     : ETAT.erreurMaj ? `<span class="maj ko">Archie non relu : ${esc(ETAT.erreurMaj)}</span>` : '';
+  // une mise à jour (automatique ou non) ne doit ni faire sauter la page, ni interrompre une recherche en cours de frappe
+  const defilement = window.scrollY, recherche = document.activeElement?.id === 'q' ? document.activeElement.selectionStart : null;
   let h = `<div class="etat">${R?.calcule_le ? `<span>Dernière mise à jour : <b>${esc(quand(R.calcule_le))}</b></span>` : '<span>Aucune donnée enregistrée</span>'}
-    ${etatArchie}<button class="btn sm" onclick="S.actualiser()" ${ETAT.maj ? 'disabled' : ''}>Actualiser</button></div>`;
+    ${etatArchie}<button class="btn sm" onclick="S.actualiser()" ${ETAT.maj ? 'disabled' : ''}>Actualiser</button>
+    <span>· mise à jour automatique toutes les ${AUTO_MIN} minutes</span></div>`;
   if (ETAT.erreur && !R) { m.innerHTML = h + `<div class="empty">Chargement impossible : ${esc(ETAT.erreur)}</div>`; return; }
   if (!R) { m.innerHTML = h + `<div class="empty">Lecture d'Archie en cours…</div>`; return; }
 
@@ -134,6 +139,8 @@ function rendu() {
   m.innerHTML = h;
   $('#q').addEventListener('input', (e) => { Q = e.target.value; tableau(); });
   tableau();
+  if (recherche !== null) { const q = $('#q'); q.focus(); q.setSelectionRange(recherche, recherche); }
+  window.scrollTo(0, defilement);
 }
 
 /** Lignes du tableau (recherche et tri sans redessiner la page). */
@@ -159,7 +166,7 @@ function ligne(c, R) {
     <td data-l="Retard" class="c-retard"><span class="compteur ${classe}"><span class="v">${c.retard_max}</span> j</span>
       <div class="sub" style="margin-top:4px">niveau 5 depuis ${depuis} j${c.date_niveau5 ? ` (${dcourt(c.date_niveau5)})` : ''}</div></td>
     <td data-l="Client" class="c-client"><div class="client">${esc(c.client)}${c.particulier ? '<span class="tag">particulier</span>' : ''}</div>
-      <details><summary>${c.factures.length} facture${c.factures.length > 1 ? 's' : ''} · ${esc(c.sites.join(' + '))}</summary><ul>${facs}</ul></details></td>
+      <details data-c="${esc(c.client)}" ${OUVERTS.has(c.client) ? 'open' : ''}><summary>${c.factures.length} facture${c.factures.length > 1 ? 's' : ''} · ${esc(c.sites.join(' + '))}</summary><ul>${facs}</ul></details></td>
     <td data-l="Relances" class="num relances c-rel"><div class="v">${c.relances.length}</div><div class="sub">${derniere ? `dernière le ${dfr(derniere)}` : 'aucune'}</div></td>
     <td data-l="Contact" class="contact c-contact">${c.manager ? `<div>${esc(c.manager)}</div>` : ''}
       ${emails.map((e) => `<div><a href="mailto:${esc(e)}">${esc(e)}</a></div>`).join('') || '<span class="sub">aucun email dans Archie</span>'}</td>
@@ -171,6 +178,16 @@ window.S = {
   actualiser: () => actualiser(),
   trier: (k) => { TRI = k; tableau(); },
 };
+
+// ---------------------------------------------------------------------------- mise à jour automatique
+// Tant que la page est ouverte et visible, Archie est relu toutes les AUTO_MIN minutes ; au retour sur l'onglet aussi si
+// les données ont vieilli. (Le serveur limite de toute façon à une relecture par minute, quel que soit le nombre de pages ouvertes.)
+// (on compte depuis la dernière tentative, réussie ou non : en cas de panne d'Archie, pas de nouvel essai toutes les 30 secondes)
+const perimees = () => Date.now() - (ETAT?.dernierEssai || 0) >= AUTO_MIN * 60000 - 5000;
+setInterval(() => { if (document.visibilityState === 'visible' && ETAT && !ETAT.chargement && !ETAT.maj && perimees()) actualiser(); }, 30000);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && ETAT && !ETAT.chargement && !ETAT.maj && perimees()) actualiser(); });
+// listes de factures dépliées : conservées d'une mise à jour à l'autre
+document.addEventListener('toggle', (e) => { const c = e.target?.dataset?.c; if (c) { if (e.target.open) OUVERTS.add(c); else OUVERTS.delete(c); } }, true);
 
 (async function init() {
   if (!C.SUPABASE_URL || !C.SUPABASE_ANON_KEY) { $('#main').innerHTML = '<div class="center"><h2>Configuration en attente</h2></div>'; return; }

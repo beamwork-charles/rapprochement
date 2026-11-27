@@ -1,9 +1,9 @@
 // Écran « Pointage » : connexion, dépôt du relevé, analyse (moteur dans le navigateur), validation vers Archie.
 // Portage de src_reference/ui/index.html + server.py sur Supabase.
-import { lireReleve } from './releve.js?v=20261127-2';
-import * as E from './engine.js?v=20261127-2';
-import * as RL from './relances.js?v=20261127-2';
-import * as D from './relances-donnees.js?v=20261127-2';
+import { lireReleve } from './releve.js?v=20261127-3';
+import * as E from './engine.js?v=20261127-3';
+import * as RL from './relances.js?v=20261127-3';
+import * as D from './relances-donnees.js?v=20261127-3';
 
 const C = window.CONFIG || {};
 const XLSX = window.XLSX;
@@ -276,33 +276,47 @@ async function revoquer(id) {
 }
 
 // ============================================================================ lien de la page « Suivi niveau 5 » (sans connexion)
-async function lienSuiviBox(nouveauLien) {
-  const { data: liens } = await sb.from('jetons_suivi').select('id,libelle,cree_par_email,cree_le,revoque_le,dernier_usage').order('cree_le', { ascending: false });
-  const actifs = (liens || []).filter((j) => !j.revoque_le);
+// UN seul lien permanent, toujours le même, que l'outil réaffiche à la demande (sa clé est conservée en base, lisible seulement
+// par les personnes autorisées). Il n'est remplacé que si quelqu'un clique sur « Changer le lien ».
+const adresseSuivi = (cle) => `${location.origin}${location.pathname.replace(/[^/]*$/, '')}suivi.html#cle=${cle}`;
+async function lienPermanent() {
+  const { data, error } = await sb.from('jetons_suivi').select('id,cle,cree_par_email,cree_le,dernier_usage')
+    .is('revoque_le', null).not('cle', 'is', null).order('cree_le', { ascending: false }).limit(1);
+  if (error) throw new Error(error.message);
+  return data[0] || null;
+}
+async function creerLienPermanent() {
+  const octets = crypto.getRandomValues(new Uint8Array(32));
+  const cle = btoa(String.fromCharCode(...octets)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const { data, error } = await sb.from('jetons_suivi').insert({ empreinte: await sha256hex(cle), cle, libelle: 'Lien permanent', cree_par: USER.id })
+    .select('id,cle,cree_par_email,cree_le,dernier_usage').single();
+  if (error) throw new Error(error.message);
+  journal('lien de suivi créé', { resultat: 'Lien permanent de la page de suivi niveau 5' });
+  return data;
+}
+async function lienSuiviBox() {
+  let lien;
+  try { lien = (await lienPermanent()) || (await creerLienPermanent()); } catch (e) { toast(`Lien indisponible : ${e.message}`); return; }
+  const jour = (d) => new Date(d).toLocaleDateString('fr-FR');
   $('#modal').innerHTML = `<h3>Lien de suivi niveau 5</h3>
-    <p>Ce lien ouvre directement la page de suivi des clients au niveau 5, sans connexion. Il ne donne accès à rien d'autre.
-    Toute personne qui le possède voit cette liste (clients, contacts, montants) : envoyez-le seulement à la personne concernée.</p>
-    ${nouveauLien ? `<p><b>Nouveau lien (affiché une seule fois) :</b></p><code class="url" id="url-suivi">${esc(nouveauLien)}</code>` : ''}
-    ${actifs.length ? `<div class="kv" style="grid-template-columns:1fr auto">${actifs.map((j) => `<span>${esc(j.libelle || 'Lien')} · créé par ${esc(j.cree_par_email)} le ${new Date(j.cree_le).toLocaleDateString('fr-FR')}${j.dernier_usage ? ' · ouvert le ' + new Date(j.dernier_usage).toLocaleDateString('fr-FR') : ' · jamais ouvert'}</span><button class="link" onclick="A.revoquerLien('${j.id}')">Révoquer</button>`).join('')}</div>` : '<p class="sub">Aucun lien actif.</p>'}
-    <div class="row" style="align-items:center;flex-wrap:wrap"><input id="lien-pour" class="search" style="width:180px" placeholder="Pour qui ?" value="Oscar">
-      <span class="spacer"></span><button class="btn" onclick="A.fermer()">Fermer</button>${nouveauLien ? '<button class="btn" id="copier">Copier le lien</button>' : ''}<button class="btn primary" id="mok">Créer un lien</button></div>`;
-  $('#mok').onclick = async () => {
-    const octets = crypto.getRandomValues(new Uint8Array(32));
-    const cle = btoa(String.fromCharCode(...octets)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-    const pour = ($('#lien-pour').value || '').trim().slice(0, 40) || 'Lien';
-    const { error } = await sb.from('jetons_suivi').insert({ empreinte: await sha256hex(cle), libelle: pour, cree_par: USER.id });
-    if (error) { toast(`Création impossible : ${error.message}`); return; }
-    journal('lien de suivi créé', { resultat: `pour ${pour}` });
-    lienSuiviBox(`${location.origin}${location.pathname.replace(/[^/]*$/, '')}suivi.html#cle=${cle}`);
-  };
-  $('#copier')?.addEventListener('click', async () => { try { await navigator.clipboard.writeText($('#url-suivi').textContent); toast('Lien copié'); } catch { toast('Copie impossible : sélectionnez le lien à la main'); } });
+    <p>Un seul lien, toujours le même. Il ouvre la page de suivi <b>sans connexion</b> et elle se met à jour toute seule :
+    à l'ouverture, puis toutes les 10 minutes tant qu'elle reste ouverte.</p>
+    <code class="url" id="url-suivi">${esc(adresseSuivi(lien.cle))}</code>
+    <p class="sub">Créé le ${jour(lien.cree_le)}${lien.dernier_usage ? ` · ouvert pour la dernière fois le ${jour(lien.dernier_usage)}` : ' · jamais ouvert'}.
+    Toute personne qui a ce lien voit la liste (clients, contacts, montants). S'il a trop circulé, « Changer le lien » : l'ancien cesse aussitôt de fonctionner.</p>
+    <div class="row"><button class="btn" onclick="A.fermer()">Fermer</button><button class="btn" onclick="A.changerLien('${esc(lien.id)}')">Changer le lien</button><button class="btn primary" id="copier">Copier le lien</button></div>`;
+  $('#copier').addEventListener('click', async () => { try { await navigator.clipboard.writeText($('#url-suivi').textContent); toast('Lien copié'); } catch { toast('Copie impossible : sélectionnez le lien à la main'); } });
   $('#mbg').classList.add('show');
 }
-async function revoquerLien(id) {
-  const { error } = await sb.from('jetons_suivi').update({ revoque_le: new Date().toISOString() }).eq('id', id);
-  if (error) { toast(`Révocation impossible : ${error.message}`); return; }
-  journal('lien de suivi révoqué', { resultat: id });
-  toast('Lien révoqué'); lienSuiviBox();
+function changerLien(id) {
+  confirmBox('Changer le lien de suivi ?', `<p>Le lien actuel cessera de fonctionner tout de suite : il faudra envoyer le nouveau aux personnes qui l'utilisent.</p>`,
+    'Changer le lien', async () => {
+      const { error } = await sb.from('jetons_suivi').update({ revoque_le: new Date().toISOString() }).eq('id', id);
+      if (error) { toast(`Changement impossible : ${error.message}`); return; }
+      journal('lien de suivi révoqué', { resultat: 'Ancien lien permanent remplacé' });
+      await lienSuiviBox();
+      toast('Nouveau lien créé : l\'ancien ne fonctionne plus');
+    });
 }
 
 /** Explication de l'écart entre le virement et le montant pointé (affichée avant validation). */
@@ -1167,7 +1181,7 @@ window.A = {
   filtre: (k, v) => { FILT[k] = v; renderBody(); },
   pick: (id, on) => { if (on) PICK.add(id); else { PICK.delete(id); delete OVR[id]; } renderBody(); },
   choisir, montant, validerUne, refuserBox, annulerBox, impMontant, imputerBox, emailBox,
-  actualiserRelances, exclureBox, reintegrer, revoquer, enregistrerModele, validerModele, revoquerLien,
+  actualiserRelances, exclureBox, reintegrer, revoquer, enregistrerModele, validerModele, changerLien,
   lienSuivi: () => lienSuiviBox(),
   vueRelances: async (v) => {
     S.vueRelances = v; renderBody();
