@@ -1,9 +1,9 @@
 // Écran « Pointage » : connexion, dépôt du relevé, analyse (moteur dans le navigateur), validation vers Archie.
 // Portage de src_reference/ui/index.html + server.py sur Supabase.
-import { lireReleve } from './releve.js?v=20261127-7';
-import * as E from './engine.js?v=20261127-7';
-import * as RL from './relances.js?v=20261127-7';
-import * as D from './relances-donnees.js?v=20261127-7';
+import { lireReleve } from './releve.js?v=20261127-8';
+import * as E from './engine.js?v=20261127-8';
+import * as RL from './relances.js?v=20261127-8';
+import * as D from './relances-donnees.js?v=20261127-8';
 
 const C = window.CONFIG || {};
 const XLSX = window.XLSX;
@@ -1447,7 +1447,11 @@ window.A = {
   choisir, montant, validerUne, refuserBox, annulerBox, impMontant, imputerBox, emailAvance, emailVirement, voirEmail,
   emails: () => { TAB = 'emails'; SEL = new Set(); render(); chargerEmails(); },
   periode: (k) => { JE.periode = k; renderBody(); },
-  periodeLibre: () => { JE.periode = 'libre'; JE.du = $('#je-du').value; JE.au = $('#je-au').value; renderBody(); },
+  periodeLibre: () => {
+    JE.periode = 'libre'; JE.du = $('#je-du').value; JE.au = $('#je-au').value;
+    if (JE.du && JE.au && JE.du > JE.au) [JE.du, JE.au] = [JE.au, JE.du]; // dates saisies à l'envers
+    renderBody();
+  },
   triEmails: () => { JE.tri = JE.tri === 'asc' ? 'desc' : 'asc'; renderBody(); },
   actualiserRelances, exclureBox, reintegrer, revoquer, enregistrerModele, validerModele, changerLien,
   lienSuivi: () => lienSuiviBox(),
