@@ -1,6 +1,6 @@
 // Rapprochement relevé bancaire <-> factures Archie — portage fidèle de src_reference/engine.py.
 // Pur calcul : aucune écriture. Les dates sont des chaînes AAAA-MM-JJ.
-import { unidecode } from './releve.js?v=20261127-9';
+import { unidecode } from './releve.js?v=20261127-10';
 
 export const TOL = 0.05;
 const TAG_RE = /\[RAPPRO:([0-9a-f]{10})\]/;

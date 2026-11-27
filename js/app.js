@@ -1,9 +1,9 @@
 // Écran « Pointage » : connexion, dépôt du relevé, analyse (moteur dans le navigateur), validation vers Archie.
 // Portage de src_reference/ui/index.html + server.py sur Supabase.
-import { lireReleve } from './releve.js?v=20261127-9';
-import * as E from './engine.js?v=20261127-9';
-import * as RL from './relances.js?v=20261127-9';
-import * as D from './relances-donnees.js?v=20261127-9';
+import { lireReleve } from './releve.js?v=20261127-10';
+import * as E from './engine.js?v=20261127-10';
+import * as RL from './relances.js?v=20261127-10';
+import * as D from './relances-donnees.js?v=20261127-10';
 
 const C = window.CONFIG || {};
 const XLSX = window.XLSX;
@@ -1048,7 +1048,8 @@ function emailAvance(id) {
   emailBox({
     cle: 'av-' + a.id, type: 'avance', avance_id: a.id, op_id: a.op_id, motif: 'Avance (trop-perçu)', client: a.client, group_uuid: a.group_uuid,
     factures: refs, montant: Number(a.montant), date_virement: a.date_virement, destinataires: e.destinataires || [], aChercher: [],
-    objet: e.objet || `Votre virement du ${dfr(a.date_virement)} — trop-perçu de ${eur(a.montant)}`, texte: e.texte || '',
+    objet: e.objet || `Votre virement du ${dfr(a.date_virement)} — trop-perçu de ${eur(a.montant)}`,
+    texte: String(e.texte || '').replace(/(Bien cordialement,)[\s\S]*$/, '$1'), // ancienne signature nominative → celle du service
     resume: `<span>Client</span><b>${esc(a.client || '—')}</b><span>Avance</span><b>${eur(a.montant)} · virement du ${dfr(a.date_virement)}</b>`,
   });
 }
@@ -1132,7 +1133,8 @@ function brouillonEmail(l) {
   const refs = (aff.length ? aff : citees).map((x) => x.ref);
   return {
     objet: `Votre virement du ${dfr(l.date)} de ${eur(l.credit)}${refs.length ? ' — ' + refs.slice(0, 3).join(', ') + (refs.length > 3 ? '…' : '') : ''}`,
-    texte: ['Bonjour,', ...P, 'Je reste bien entendu à votre écoute pour toute question.', 'Bien cordialement,', RL.SIGNATURE].join('\n\n'),
+    // la signature (service + logo The Bureau) est ajoutée par la fonction d'envoi
+    texte: ['Bonjour,', ...P, 'Je reste bien entendu à votre écoute pour toute question.', 'Bien cordialement,'].join('\n\n'),
     refs, aff, citees,
   };
 }
@@ -1153,7 +1155,7 @@ function emailVirement(id) {
 
 /** Fenêtre d'email : destinataires, objet et texte modifiables, puis « Envoyer ». */
 function emailBox(ctx) {
-  const d = BROUILLONS[ctx.cle] || (BROUILLONS[ctx.cle] = { a: ctx.destinataires.join(', '), objet: ctx.objet, texte: ctx.texte, copie: true, modifieA: false, nouveau: true });
+  const d = BROUILLONS[ctx.cle] || (BROUILLONS[ctx.cle] = { a: ctx.destinataires.join(', '), objet: ctx.objet, texte: ctx.texte, copie: true, service: ctx.service || RL.SERVICE_DEFAUT, modifieA: false, nouveau: true });
   const repris = !d.nouveau; d.nouveau = false;
   const m = $('#modal');
   m.className = 'modal large'; m.dataset.cle = ctx.cle;
@@ -1165,12 +1167,21 @@ function emailBox(ctx) {
       <input class="t" id="em-a" value="${esc(d.a)}" placeholder="adresse@client.fr, autre@client.fr" autocomplete="off">
       <label for="em-objet">Objet</label><input class="t" id="em-objet" value="${esc(d.objet)}" maxlength="200">
       <label for="em-texte">Message</label><textarea id="em-texte" rows="15">${esc(d.texte)}</textarea>
+      <label for="em-service">Signature</label>
+      <div class="signature"><input class="t" id="em-service" list="em-services" value="${esc(d.service)}" maxlength="60" placeholder="${esc(RL.SERVICE_DEFAUT)}">
+        <datalist id="em-services">${RL.SERVICES.map((s) => `<option value="${esc(s)}">`).join('')}</datalist>
+        <div class="sig"><b id="em-sig">${esc(d.service || RL.SERVICE_DEFAUT)}</b><img src="img/the-bureau.png" width="160" height="37" alt="The Bureau"></div>
+        <div class="sub">Ajoutée sous « Bien cordialement, » à l'envoi.</div></div>
       <label class="check"><input type="checkbox" id="em-copie" ${d.copie ? 'checked' : ''}> M'envoyer une copie (${esc(USER.email)})</label>
       <p class="sub">Expéditeur : The Bureau &lt;comptabilite@notifications.thebureau.paris&gt; · les réponses arrivent à patrick.bellaiche@thebureau.paris</p>
       <div class="errmsg" id="em-err"></div>
     </div>
     <div class="row">${repris ? '<button class="link" id="em-reset">Revenir au texte proposé</button><span class="spacer"></span>' : ''}<button class="btn" onclick="A.fermer()">Annuler</button><button class="btn primary" id="em-ok">Envoyer</button></div>`;
-  const sauver = () => { d.a = $('#em-a').value; d.objet = $('#em-objet').value; d.texte = $('#em-texte').value; d.copie = $('#em-copie').checked; };
+  const sauver = () => {
+    d.a = $('#em-a').value; d.objet = $('#em-objet').value; d.texte = $('#em-texte').value; d.copie = $('#em-copie').checked;
+    d.service = $('#em-service').value; $('#em-sig').textContent = d.service.trim() || RL.SERVICE_DEFAUT;
+  };
+  $('#em-service').addEventListener('input', sauver);
   for (const s of ['#em-a', '#em-objet', '#em-texte']) $(s).addEventListener('input', sauver);
   $('#em-copie').addEventListener('change', sauver);
   $('#em-a').addEventListener('input', () => { d.modifieA = true; });
@@ -1213,7 +1224,7 @@ async function envoyerEmail(ctx, d) {
     const r = await sb.functions.invoke('email-client', { body: {
       quoi: 'envoyer', type: ctx.type, op_id: ctx.op_id, avance_id: ctx.avance_id, releve_id: S?.releve?.id, motif: ctx.motif,
       client: ctx.client, group_uuid: ctx.group_uuid, factures: ctx.factures, montant: ctx.montant, date_virement: ctx.date_virement,
-      destinataires: dest, copie_moi: d.copie, objet: d.objet.trim(), texte: d.texte,
+      destinataires: dest, copie_moi: d.copie, objet: d.objet.trim(), texte: d.texte, service: (d.service || '').trim() || RL.SERVICE_DEFAUT,
     } });
     if (r.error) {
       const j = await r.error.context?.json?.().catch(() => null);

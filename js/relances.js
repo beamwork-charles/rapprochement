@@ -48,7 +48,11 @@ export function ajouterOuvres(d, n) { while (n > 0) { d = ajouterJours(d, 1); if
 export function ouvresEntre(a, b) { let n = 0; for (let d = ajouterJours(a, 1); d <= b; d = ajouterJours(d, 1)) if (estOuvre(d)) n++; return n; }
 
 // ---------------------------------------------------------------------------- textes
-export const SIGNATURE = 'Patrick Bellaiche\nThe Bureau\npatrick.bellaiche@thebureau.paris';
+// Signature des emails (demande de Charles, 27/11/2026) : nom du service qui écrit + The Bureau (le logo est ajouté par la
+// fonction d'envoi « email-client »). À l'envoi des relances (étape 7), ne pas l'ajouter deux fois : la fonction la pose déjà.
+export const SERVICE_DEFAUT = 'Service comptabilité';
+export const SERVICES = ['Service comptabilité', 'Service recouvrement', 'Service facturation'];
+export const SIGNATURE = `${SERVICE_DEFAUT}\nThe Bureau`;
 export const VARIABLES = ['client', 'factures', 'total', 'date_limite', 'historique', 'trame', 'signature'];
 const eurTexte = (x) => {
   const [e, d] = Math.abs(x).toFixed(2).split('.');
