@@ -628,9 +628,12 @@ function lignesRevaloTable() {
 // Plans d'étage reproduits d'après les onglets « Réf. TB1..TB4 » du classeur « TB - The Bureau » (géométrie en base,
 // fonction « tableau ») : une case du classeur = une unité. Chaque bureau (zone colorée de l'Excel) prend la couleur
 // de son occupation calculée depuis Archie (onglet Occupation), avec la légende de l'Excel.
-const PLAN_STATUTS = { occupe: 'Occupé', se_libere: 'Sur le départ', arrive: 'Signé', libre: 'Libre', inconnu: 'Non trouvé dans Archie' };
-const PLAN_COUL = { occupe: ['#EF8080', '#7F1D1D'], se_libere: ['#F8B4A0', '#9A3412'], arrive: ['#C4EDB0', '#166534'], libre: ['#7CCF8E', '#14532D'], inconnu: ['#FFFFFF', '#6B7280'] };
+const PLAN_STATUTS = { occupe: 'Occupé', se_libere: 'Sur le départ', arrive: 'Signé', libre: 'Libre', inconnu: 'Non trouvé dans Archie', attente: 'Occupation en cours de chargement' };
+const PLAN_COUL = { occupe: ['#EF8080', '#7F1D1D'], se_libere: ['#F8B4A0', '#9A3412'], arrive: ['#C4EDB0', '#166534'], libre: ['#7CCF8E', '#14532D'], inconnu: ['#FFFFFF', '#6B7280'], attente: ['#F3F4F6', '#6B7280'] };
 const normCode = (s) => String(s ?? '').toUpperCase().replace(/\s+/g, '');
+const coulPlan = (c) => (/^[0-9A-Fa-f]{6}$/.test(String(c)) ? '#' + c : '#D9DCE1'); // couleur lue en base : six chiffres hexadécimaux, sinon gris
+/** Nombre de bureaux d'une zone du plan, comme la colonne « Nb bureaux » du classeur : 0 pour un poste de co-résident, 2 pour « A404-405 ». */
+const nbBureauxZone = (code) => (/^P\d{1,2}$/i.test(normCode(code)) ? 0 : Math.max(1, codes(code).length));
 
 async function chargerPlans() {
   try { PLANS = (await appel('plans')).plans || []; rendu(); } catch (e) { if (!sessionPerdue(e)) PLANS = []; }
@@ -704,13 +707,15 @@ function vuePlan() {
   const largeurMax = Math.max(...P.etages.map((e) => e.l)); // même échelle pour tous les étages du bâtiment
   for (const e of P.etages) {
     let occupes = 0, libres = 0;
-    const fonds = e.fonds.map(([x, y, w, hh, c]) => `<rect x="${x}" y="${y}" width="${w}" height="${hh}" fill="#${c}"/>`).join('');
+    const fonds = e.fonds.map(([x, y, w, hh, c]) => `<rect x="${Number(x)}" y="${Number(y)}" width="${Number(w)}" height="${Number(hh)}" fill="${coulPlan(c)}"/>`).join('');
     const textes = e.textes.map(([x, y, w, hh, t, c, sz, b, fusion]) =>
-      texteBoite(x, y, w, hh, t, sz * 0.2, `fill="#${c}"${b ? ' font-weight="700"' : ''}`, !!fusion)).join('');
+      texteBoite(Number(x), Number(y), Number(w), Number(hh), String(t), (Number(sz) || 11) * 0.2, `fill="${coulPlan(c)}"${b ? ' font-weight="700"' : ''}`, !!fusion)).join('');
     const bureaux = e.bureaux.map((z) => {
       const s = etatZone(z.code, P.batiment);
-      const st = s?.statut || 'inconnu';
-      if (st === 'occupe' || st === 'se_libere') occupes++; else if (st === 'libre' || st === 'arrive') libres++;
+      const st = s?.statut || (occ ? 'inconnu' : 'attente');
+      // compteur de l'étage comme dans l'Excel : en bureaux (postes de co-résident non comptés, « A404-405 » = 2)
+      const nb = nbBureauxZone(z.code);
+      if (st === 'occupe' || st === 'se_libere') occupes += nb; else if (st === 'libre' || st === 'arrive') libres += nb;
       const [fond, encre] = PLAN_COUL[st];
       const cle = `${P.batiment}|${z.code}`;
       let [lx, ly, lw, lh] = z.lab || [0, 0, 0, 0];
@@ -718,16 +723,17 @@ function vuePlan() {
         const x0 = Math.min(...z.r.map((q) => q[0])), y0 = Math.min(...z.r.map((q) => q[1]));
         lx = x0; ly = y0; lw = Math.max(...z.r.map((q) => q[0] + q[2])) - x0; lh = Math.max(...z.r.map((q) => q[1] + q[3])) - y0;
       }
-      const fs = Math.min(2.3, lw / 3.2, lh / 1.6);
+      // taille du code : celle de l'Excel (2,3), réduite seulement si le code ne tient pas dans son libellé
+      const fs = Math.min(2.3, lw / (0.68 * Math.max(3, String(z.code).length)), lh / 1.3);
       const avecClient = s?.client && lh >= 6 && lw >= 9;
       const maxc = Math.max(4, Math.floor(lw / (fs * 0.42)));
       const client = avecClient ? `<text x="${(lx + lw / 2).toFixed(2)}" y="${(ly + lh / 2 + fs * 0.75).toFixed(2)}" text-anchor="middle" dominant-baseline="central" fill="${encre}" style="font-size:${(fs * 0.62).toFixed(2)}px">${esc(s.client.length > maxc ? s.client.slice(0, maxc - 1) + '…' : s.client)}</text>` : '';
       return `<g class="pz${PLAN_CHOIX === cle ? ' choisi' : ''}" data-pz="${esc(cle)}"><title>${esc(z.code)} · ${esc(PLAN_STATUTS[st])}${s?.client ? ' · ' + esc(s.client) : ''}</title>
-        ${z.r.map(([x, y, w, hh]) => `<rect x="${x}" y="${y}" width="${w}" height="${hh}" fill="${fond}"${st === 'inconnu' ? ' stroke="#9CA3AF" stroke-width=".25" stroke-dasharray=".8 .5"' : ''}/>`).join('')}
+        ${z.r.map(([x, y, w, hh]) => `<rect x="${Number(x)}" y="${Number(y)}" width="${Number(w)}" height="${Number(hh)}" fill="${fond}"${st === 'inconnu' ? ' stroke="#9CA3AF" stroke-width=".25" stroke-dasharray=".8 .5"' : ''}/>`).join('')}
         <text x="${(lx + lw / 2).toFixed(2)}" y="${(ly + lh / 2 - (client ? fs * 0.35 : 0)).toFixed(2)}" text-anchor="middle" dominant-baseline="central" font-weight="700" fill="${encre}" style="font-size:${fs.toFixed(2)}px">${esc(z.code)}</text>${client}</g>`;
     }).join('');
     h += `<div class="etage"><div class="etage-t"><b>${esc(e.titre)}</b> <span class="sub">Occupés ${occupes} · Libres ${libres}</span></div>
-      <svg class="plan" viewBox="-0.5 -0.5 ${e.l + 1} ${e.h + 1}" preserveAspectRatio="xMinYMin meet" style="width:${(100 * e.l / largeurMax).toFixed(1)}%;max-width:${Math.round(e.l * 8)}px">${fonds}${bureaux}${textes}</svg></div>`;
+      <svg class="plan" viewBox="-0.5 -0.5 ${Number(e.l) + 1} ${Number(e.h) + 1}" preserveAspectRatio="xMinYMin meet" style="width:${(100 * e.l / largeurMax).toFixed(1)}%;max-width:${Math.round(e.l * 8)}px">${fonds}${bureaux}${textes}</svg></div>`;
   }
   return h + '<div style="height:60px"></div>';
 }
