@@ -541,7 +541,7 @@ function vueRevalo() {
     ${choix('RV_CAT', RV_CAT, [['bureaux', 'Bureaux'], ['coresidents', 'Co-résidents'], ['itinerants', 'Itinérants'], ['parking', 'Parking'], ['domiciliation', 'Domiciliation'], ['tous', 'Toutes catégories']])}
     ${choix('RV_BAT', RV_BAT, OPT_BATS())}
     <span class="compte-res" id="rv-compte"></span></div>
-    <div class="tablewrap"><table><thead><tr><th>Statut</th><th>Client</th><th>Contrat</th><th>Bât.</th><th class="num">Loyer HT</th><th>Dernière hausse</th><th>Prochaine hausse</th><th class="num">Gain / mois</th></tr></thead><tbody id="rcontrats"></tbody></table></div>`;
+    <div class="tablewrap"><table><thead><tr><th>Statut</th><th>Client</th><th>Bât.</th><th>Bureau</th><th>Dernière hausse</th><th class="num">Ancien prix HT</th><th>Préavis</th><th>Départ</th><th class="num">Nouveau prix HT</th></tr></thead><tbody id="rcontrats"></tbody></table></div>`;
 
   // calendrier des 12 prochains mois (tous contrats), replié
   const auj = I.donnees.aujourdhui || aujourdhuiParis();
@@ -570,26 +570,25 @@ function lignesRevaloTable() {
     .sort((a, b) => ordre[a.statut] - ordre[b.statut] || (a.anniversaire || '9999').localeCompare(b.anniversaire || '9999'));
   const gain = L.reduce((s, r) => s + r.gain, 0);
   $('#rv-compte').textContent = `${L.length} contrat${L.length > 1 ? 's' : ''}${gain ? ` · +${eur0(gain)} / mois` : ''}`;
+  // Tableau volontairement court (demande de Charles) : statut et date de la hausse, client, bâtiment, bureau, dernière hausse, ancien prix,
+  // préavis, date de départ, nouveau prix. Le détail (motif d'un blocage, observations du classeur) passe en info-bulle.
   $('#rcontrats').innerHTML = L.length ? L.map((r) => {
-    const prochaine = r.prochaine
-      ? `${dfr(r.prochaine.date)} · ${r.prochaine.pct > 0 ? '+' : ''}${r.prochaine.pct} %<div class="sub">${eur(r.prochaine.de)} → ${eur(r.prochaine.a)}</div>${r.motif ? `<div class="sub neg">${esc(r.motif)}</div>` : ''}`
-      : r.statut === 'en_retard' ? `<span class="neg">anniversaire passé le ${dfr(r.anniversaire)}</span>`
-        : r.statut === 'se_termine' ? `<span class="sub">fin du contrat le ${dfr(r.fin)}</span>`
-          : r.statut === 'bloquee' ? `<span class="sub">${esc(r.motif)}</span>`
-            : r.statut === 'a_programmer' ? `anniversaire le <b>${dfr(r.anniversaire)}</b><div class="sub">${/notifi/i.test(r.motif || '') ? 'notifiée au client, à inscrire dans Archie' : 'à inscrire dans Archie'}</div>`
-            : r.statut === 'a_prevenir' ? `anniversaire le <b>${dfr(r.anniversaire)}</b><div class="sub">préavis de 2 mois : prévenir le client</div>`
-              : `<span class="sub">anniversaire le ${dfr(r.anniversaire)}</span>`;
-    const obs = r.regle?.observations;
-    return `<tr>
-      <td><span class="statut rv-${r.statut}">${RV_STATUTS[r.statut]}</span>${r.regle?.preavis_mois >= 2 ? '<div class="sub">préavis 2 mois</div>' : ''}</td>
+    const dateHausse = r.statut === 'programmee' ? r.prochaine?.date : ['en_retard', 'a_programmer', 'a_prevenir', 'a_jour'].includes(r.statut) ? r.anniversaire : null;
+    const aCorriger = r.statut === 'programmee' && r.motif;
+    const bulle = [r.motif, r.regle?.observations].filter(Boolean).join(' — ');
+    const preavis = !r.regle ? '<span class="faible" title="Contrat absent du classeur Recap +3%">–</span>' : r.regle.preavis_mois >= 2 ? `${r.regle.preavis_mois} mois` : 'Sans préavis';
+    const bureau = r.bureaux?.length ? [...r.bureaux].sort((a, b) => a.localeCompare(b, 'fr', { numeric: true })).join(', ') : r.contrat;
+    return `<tr${bulle ? ` title="${esc(bulle)}"` : ''}>
+      <td><span class="statut rv-${r.statut}">${RV_STATUTS[r.statut]}</span>${dateHausse ? `<div style="white-space:nowrap" class="sub${r.statut === 'en_retard' ? ' neg' : ''}">${r.statut === 'en_retard' ? 'depuis le ' : 'au '}${dfr(dateHausse)}</div>` : ''}${aCorriger ? '<div class="sub neg">à corriger dans Archie</div>' : ''}</td>
       <td><b>${esc(r.client)}</b></td>
-      <td>${esc(r.contrat)}${r.date_contrat ? `<div class="sub">contrat du ${dfr(r.date_contrat)}${r.date_contrat !== r.debut ? ' (date du classeur)' : ''}</div>` : ''}${r.remise ? `<div class="sub">remise ${r.remise} %${r.fin_remise ? ` jusqu'au ${dfr(r.fin_remise)}` : ''}</div>` : ''}${r.fin && r.statut !== 'se_termine' ? `<div class="sub">fin du contrat le ${dfr(r.fin)}</div>` : ''}${obs ? `<div class="obs" title="${esc(obs)}">${esc(obs.length > 140 ? obs.slice(0, 140) + '…' : obs)}</div>` : ''}</td>
       <td>${esc(r.batiment)}</td>
+      <td>${esc(bureau)}</td>
+      <td>${r.derniere ? dfr(r.derniere) : '<span class="faible" title="Aucune hausse depuis le début du contrat">aucune</span>'}</td>
       <td class="num">${eur(r.loyer)}</td>
-      <td>${r.derniere ? `${dfr(r.derniere)}${r.derniere_source === 'classeur' ? '<div class="sub">selon le classeur</div>' : ''}` : `<span class="sub">aucune depuis le ${dfr(r.date_contrat || r.debut)}</span>`}</td>
-      <td>${prochaine}</td>
-      <td class="num">${r.gain ? '+' + eur(r.gain) : '<span class="faible">–</span>'}</td></tr>`;
-  }).join('') : '<tr><td colspan="8" class="empty">Aucun contrat ne correspond.</td></tr>';
+      <td style="white-space:nowrap">${preavis}</td>
+      <td style="white-space:nowrap">${r.fin ? dfr(r.fin) : '<span class="faible">–</span>'}</td>
+      <td class="num">${r.gain ? `<b>${eur(Math.round((r.loyer + r.gain) * 100) / 100)}</b>` : '<span class="faible">–</span>'}</td></tr>`;
+  }).join('') : '<tr><td colspan="9" class="empty">Aucun contrat ne correspond.</td></tr>';
 }
 
 // ---------------------------------------------------------------------------- plan
