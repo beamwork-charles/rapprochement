@@ -3,6 +3,8 @@
 // navigateur), ou session d'un compte autorisé de l'outil de pointage (sans mot de passe).
 // Toutes les données passent par la fonction « tableau » ; aucune clé ni donnée dans cette page.
 
+import { calculer, BATIMENTS, CATEGORIES, HORIZON_JOURS } from './occupation.js?v=20261127-4';
+
 const C = window.CONFIG || {};
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -26,6 +28,9 @@ const ONGLETS = [
 let sb = null, PRENOM = '', ONGLET = 'recouvrement';
 let REC = null; // { R, chargement, maj, erreur, erreurMaj, dernierEssai }
 let TRI = 'retard', Q = '';
+let OCC = null; // { inst: { calcule_le, par, donnees }, chargement, maj, progression, erreur, erreurMaj }
+let OCC_BAT = 'tous', OCC_STATUT = 'tous', OCC_Q = '';
+const OCC_PERIME_H = 12; // l'instantané est recalculé à l'ouverture s'il a plus de 12 heures
 const OUVERTS = new Set();
 
 // ---------------------------------------------------------------------------- appels à la fonction « tableau »
@@ -94,6 +99,7 @@ function entrer(prenom) {
   $('#who').textContent = prenom; $('#b-out').hidden = !localStorage.getItem(CLE_JETON);
   rendu();
   demarrerRecouvrement();
+  demarrerOccupation();
 }
 
 // ---------------------------------------------------------------------------- recouvrement (données de la fonction « suivi »)
@@ -127,8 +133,13 @@ async function actualiser() {
 // ---------------------------------------------------------------------------- rendu
 function tuiles() {
   const R = REC?.R;
-  const compteur = { recouvrement: R ? String(R.clients.length) : '…' };
-  const sous = { recouvrement: R ? `clients au niveau 5 · ${eur0(R.clients.reduce((s, c) => s + c.total, 0))}` : 'chargement' };
+  const T = OCC?.inst?.donnees?.total;
+  const enCours = OCC?.chargement || OCC?.maj;
+  const compteur = { recouvrement: R ? String(R.clients.length) : '…', occupation: T ? pct(T.surface_occupee, T.surface) : (enCours ? '…' : '') };
+  const sous = {
+    recouvrement: R ? `clients au niveau 5 · ${eur0(R.clients.reduce((s, c) => s + c.total, 0))}` : 'chargement',
+    occupation: T ? `surface occupée · ${T.libres} bureaux libres` : (enCours ? 'chargement' : 'en préparation'),
+  };
   return `<nav class="tiles">${ONGLETS.map((o) => `<a class="tile ${o.id} ${ONGLET === o.id ? 'on' : ''}" href="#${o.id}">
     <div class="t">${esc(o.titre)}</div><div class="n ${compteur[o.id] ? '' : 'vide'}">${esc(compteur[o.id] || '—')}</div>
     <div class="s">${esc(sous[o.id] || 'en préparation')}</div><div class="bar"></div></a>`).join('')}</nav>`;
@@ -137,8 +148,15 @@ function tuiles() {
 function rendu() {
   if (!PRENOM) return;
   const m = $('#main');
-  const defilement = window.scrollY, recherche = document.activeElement?.id === 'q' ? document.activeElement.selectionStart : null;
+  const defilement = window.scrollY, recherche = ['q', 'oq'].includes(document.activeElement?.id) ? document.activeElement.selectionStart : null;
   let h = tuiles();
+  if (ONGLET === 'occupation') {
+    m.innerHTML = h + vueOccupation();
+    const q = $('#oq');
+    if (q) { q.addEventListener('input', (e) => { OCC_Q = e.target.value; lignesBureaux(); }); lignesBureaux(); if (recherche !== null) { q.focus(); q.setSelectionRange(recherche, recherche); } }
+    window.scrollTo(0, defilement);
+    return;
+  }
   if (ONGLET !== 'recouvrement') {
     const o = ONGLETS.find((x) => x.id === ONGLET);
     m.innerHTML = h + `<div class="bientot"><h2>${esc(o.titre)}</h2><p>En préparation.</p></div>`;
@@ -172,7 +190,7 @@ function vueRecouvrement() {
     <div><div class="n">${tous.reduce((s, c) => s + c.factures.length, 0)}</div><div class="l">factures</div></div></div>
     <div class="outils"><input class="search" id="q" placeholder="Rechercher un client, un email, une facture…" value="${esc(Q)}">
     <span class="tri" id="tri"></span></div>
-    <table><thead><tr><th>Retard</th><th>Client</th><th class="num">Relances</th><th>Contact</th><th class="num">Montant dû</th></tr></thead><tbody id="corps"></tbody></table><div style="height:60px"></div>`;
+    <table class="rec"><thead><tr><th>Retard</th><th>Client</th><th class="num">Relances</th><th>Contact</th><th class="num">Montant dû</th></tr></thead><tbody id="corps"></tbody></table><div style="height:60px"></div>`;
   return h;
 }
 
@@ -213,9 +231,12 @@ function ligne(c, R) {
 
 // ---------------------------------------------------------------------------- événements
 document.addEventListener('click', (e) => {
-  const t = e.target.closest('[data-tri], #b-actualiser');
+  const t = e.target.closest('[data-tri], #b-actualiser, #b-occ-actualiser, [data-bat], [data-statut]');
   if (!t) return;
   if (t.id === 'b-actualiser') actualiser();
+  else if (t.id === 'b-occ-actualiser') actualiserOccupation();
+  else if (t.dataset.bat) { OCC_BAT = t.dataset.bat; lignesBureaux(); marquerFiltres(); }
+  else if (t.dataset.statut) { OCC_STATUT = t.dataset.statut; lignesBureaux(); marquerFiltres(); }
   else { TRI = t.dataset.tri; lignes(); }
 });
 document.addEventListener('toggle', (e) => { const c = e.target?.dataset?.c; if (c) { if (e.target.open) OUVERTS.add(c); else OUVERTS.delete(c); } }, true);
@@ -246,3 +267,125 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
     vueEntree(e.statut === 401 ? '' : e.message);
   }
 })();
+
+// ---------------------------------------------------------------------------- occupation
+// (déclarations de fonctions : disponibles dès le chargement du module)
+function pct(a, b) { return b > 0 ? Math.round((100 * a) / b) + ' %' : '—'; }
+function m2(v) { return Number(v).toLocaleString('fr-FR', { maximumFractionDigits: 0 }) + ' m²'; }
+const STATUTS = { libre: 'Libre', arrive: 'Arrivée signée', occupe: 'Occupé', se_libere: 'Se libère' };
+const codeBat = (space) => BATIMENTS.find((b) => b.space === space)?.code || '';
+const aujourdhuiParis = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Paris' }).format(new Date());
+
+async function demarrerOccupation() {
+  OCC = { inst: null, chargement: true, maj: false };
+  const etat = OCC;
+  try { etat.inst = await appel('occupation'); } catch (e) { if (sessionPerdue(e)) return; etat.erreur = e.message; }
+  if (OCC !== etat) return;
+  etat.chargement = false;
+  if (!etat.erreur && (!etat.inst?.donnees || Date.now() - Date.parse(etat.inst.calcule_le) > OCC_PERIME_H * 3600000)) actualiserOccupation();
+  else rendu();
+}
+
+/** Relit Archie (bureaux, forfaits, abonnements des 4 bâtiments, par lots), recalcule et enregistre l'instantané. */
+async function actualiserOccupation() {
+  const etat = OCC;
+  if (!etat || etat.maj) return;
+  etat.maj = true; etat.erreurMaj = null;
+  const D = { espaces: [], forfaits: [], abonnements: [] };
+  let appels = 0;
+  const maj = () => {
+    etat.progression = `${appels} lecture${appels > 1 ? 's' : ''} · ${D.abonnements.length} abonnements`;
+    const e = $('#occ-progression'); if (e) e.textContent = etat.progression;
+  };
+  rendu();
+  try {
+    await Promise.all(BATIMENTS.map(async (B) => {
+      for (const lot of ['espaces', 'forfaits', 'abonnements']) {
+        let curseur = null;
+        do {
+          const r = await appel('occupation_lot', { space: B.space, lot, curseur });
+          D[lot].push(...r.items); curseur = r.curseur; appels++; maj();
+        } while (curseur);
+      }
+    }));
+    const donnees = calculer(D, aujourdhuiParis());
+    await appel('occupation_enregistrer', { donnees });
+    if (OCC !== etat) return;
+    etat.inst = { calcule_le: new Date().toISOString(), par: PRENOM, donnees };
+  } catch (e) {
+    if (sessionPerdue(e)) return;
+    etat.erreurMaj = e.message;
+  }
+  etat.maj = false;
+  if (OCC === etat) rendu();
+}
+
+function vueOccupation() {
+  if (!OCC || (OCC.chargement && !OCC.inst)) return `<div class="center"><div class="big-spin"></div><p>Chargement…</p></div>`;
+  const I = OCC.inst, R = I?.donnees;
+  const etatArchie = OCC.maj
+    ? `<span class="maj"><span class="spin"></span> Lecture d'Archie — <span id="occ-progression">${esc(OCC.progression || '')}</span></span>`
+    : OCC.erreurMaj ? `<span class="maj ko">Archie non relu : ${esc(OCC.erreurMaj)}</span>` : '';
+  let h = `<div class="etat">${I?.calcule_le ? `<span>Calculé le <b>${esc(quand(new Date(I.calcule_le)))}</b>${I.par ? ` par ${esc(I.par)}` : ''}</span>` : '<span>Pas encore calculé</span>'}
+    ${etatArchie}<button class="btn sm" id="b-occ-actualiser" ${OCC.maj ? 'disabled' : ''}>Actualiser</button></div>`;
+  if (OCC.erreur && !R) return h + `<div class="empty">Chargement impossible : ${esc(OCC.erreur)}</div>`;
+  if (!R) return h + `<div class="empty">Lecture d'Archie en cours (environ 20 secondes)…</div>`;
+  const T = R.total;
+  const loyersTotal = (x) => CATEGORIES.reduce((s, [k]) => s + (x.loyers[k] || 0), 0);
+  const L = [...R.batiments, T];
+  h += `<div class="resume">
+    <div><div class="n">${pct(T.surface_occupee, T.surface)}</div><div class="l">surface occupée · ${m2(T.surface_occupee)} sur ${m2(T.surface)}</div></div>
+    <div><div class="n">${T.occupes} / ${T.bureaux}</div><div class="l">bureaux occupés</div></div>
+    <div><div class="n">${eur0(loyersTotal(T))}</div><div class="l">loyers HT du mois</div></div>
+    <div><div class="n">${eur0(T.stock_vide)}</div><div class="l">bureaux libres au prix catalogue</div></div></div>`;
+
+  h += `<h3 class="titre">Par bâtiment</h3><div class="tablewrap"><table class="synth"><thead><tr><th>Bâtiment</th><th class="num">Bureaux occupés</th><th class="num">Surface occupée</th><th class="num">Postes occupés</th><th class="num">Loyers HT du mois</th><th class="num">Libres au catalogue</th><th class="num">Écart au catalogue</th></tr></thead><tbody>${L.map((b) => `<tr class="${b.code === 'Total' ? 'total' : ''}">
+      <td><b>${esc(b.code)}</b> <span class="sub">${esc(b.nom)}</span></td>
+      <td class="num">${b.occupes} / ${b.bureaux}</td>
+      <td class="num">${pct(b.surface_occupee, b.surface)} <span class="sub">${m2(b.surface_occupee)} / ${m2(b.surface)}</span></td>
+      <td class="num">${b.postes_occupes} / ${b.postes}</td>
+      <td class="num">${eur0(loyersTotal(b))}</td>
+      <td class="num">${eur0(b.stock_vide)}</td>
+      <td class="num">${b.grille_bureaux_occupes ? (b.remise_bureaux > 0 ? '+' : '') + pct(b.remise_bureaux, b.grille_bureaux_occupes) : '—'}</td></tr>`).join('')}</tbody></table></div>`;
+
+  const ligneMois = (titre, cle, classe) => `<tr><td>${titre}</td>${L.map((b) => { const v = CATEGORIES.reduce((s, [k]) => s + b[cle][k], 0); return `<td class="num ${classe}">${v ? eur0(v) : '–'}</td>`; }).join('')}</tr>`;
+  h += `<h3 class="titre">Loyers HT du mois par catégorie</h3><div class="tablewrap"><table class="synth"><thead><tr><th></th>${L.map((b) => `<th class="num">${esc(b.code)}</th>`).join('')}</tr></thead><tbody>
+    ${CATEGORIES.map(([k, t]) => `<tr><td>${esc(t)}</td>${L.map((b) => `<td class="num">${b.loyers[k] ? eur0(b.loyers[k]) : '–'}</td>`).join('')}</tr>`).join('')}
+    <tr class="total"><td>Total</td>${L.map((b) => `<td class="num">${eur0(loyersTotal(b))}</td>`).join('')}</tr>
+    ${ligneMois('Entrées du mois', 'entrees', 'pos')}${ligneMois('Départs du mois', 'departs', 'neg')}
+    </tbody></table></div>`;
+
+  const ligneAVenir = (u) => `<tr><td>${dfr(u.date)}</td><td><b>${esc(u.nom)}</b> <span class="sub">${esc(codeBat(u.space))}</span></td><td>${esc(u.client)}</td><td class="num">${u.loyer != null ? eur0(u.loyer) : '–'}</td></tr>`;
+  const bloc = (titre, l, vide) => `<div><h3 class="titre">${titre} <span class="sub">(${l.length})</span></h3>${l.length ? `<table class="synth"><tbody>${l.map(ligneAVenir).join('')}</tbody></table>` : `<div class="sub">${vide}</div>`}</div>`;
+  h += `<div class="deux">${bloc(`Départs dans les ${HORIZON_JOURS} jours`, R.a_venir.departs, 'Aucun')}${bloc(`Arrivées dans les ${HORIZON_JOURS} jours`, R.a_venir.arrivees, 'Aucune')}</div>`;
+
+  h += `<h3 class="titre">Bureaux</h3><div class="outils">
+    <span class="tri" id="f-bat">${[['tous', 'Tous'], ...BATIMENTS.map((b) => [b.space, b.code])].map(([k, t]) => `<button class="${OCC_BAT === k ? 'on' : ''}" data-bat="${k}">${t}</button>`).join('')}</span>
+    <span class="tri" id="f-statut">${[['tous', 'Tous'], ['libre', 'Libres'], ['se_libere', 'Se libèrent'], ['arrive', 'Arrivées'], ['occupe', 'Occupés']].map(([k, t]) => `<button class="${OCC_STATUT === k ? 'on' : ''}" data-statut="${k}">${t}</button>`).join('')}</span>
+    <input class="search" id="oq" placeholder="Rechercher un bureau, un client…" value="${esc(OCC_Q)}"></div>
+    <div class="tablewrap"><table class="bureaux"><thead><tr><th>Bureau</th><th>Étage</th><th class="num">Surface</th><th class="num">Postes</th><th>Statut</th><th>Client</th><th class="num">Loyer HT</th><th class="num">Catalogue</th></tr></thead><tbody id="obureaux"></tbody></table></div>`;
+  if (R.non_rattaches?.length) {
+    h += `<div class="info">Abonnements de bureau sans bureau reconnu dans Archie, non comptés dans l'occupation : ${R.non_rattaches.map((a) => `${esc(a.client)} (${esc(a.nom)})`).join(' · ')}</div>`;
+  }
+  return h + '<div style="height:60px"></div>';
+}
+
+function marquerFiltres() {
+  document.querySelectorAll('[data-bat]').forEach((b) => b.classList.toggle('on', b.dataset.bat === OCC_BAT));
+  document.querySelectorAll('[data-statut]').forEach((b) => b.classList.toggle('on', b.dataset.statut === OCC_STATUT));
+}
+
+function lignesBureaux() {
+  const R = OCC?.inst?.donnees; if (!R || !$('#obureaux')) return;
+  const q = OCC_Q.trim().toLowerCase();
+  const L = R.unites.filter((u) => (OCC_BAT === 'tous' || u.space === OCC_BAT) && (OCC_STATUT === 'tous' || u.statut === OCC_STATUT)
+    && (!q || [u.nom, u.client, u.etage].join(' ').toLowerCase().includes(q)))
+    .sort((a, b) => codeBat(a.space).localeCompare(codeBat(b.space)) || a.nom.localeCompare(b.nom, 'fr', { numeric: true }));
+  $('#obureaux').innerHTML = L.length ? L.map((u) => `<tr>
+      <td><b>${esc(u.nom)}</b> <span class="sub">${esc(codeBat(u.space))}</span></td>
+      <td>${esc(u.etage)}</td><td class="num">${u.surface ? m2(u.surface) : '–'}</td><td class="num">${u.postes || '–'}</td>
+      <td><span class="statut ${u.statut}">${STATUTS[u.statut]}${u.date ? ` ${dfr(u.date)}` : ''}</span></td>
+      <td>${esc(u.client)}${u.lot ? `<div class="sub">${esc(u.lot)}</div>` : ''}${u.statut !== 'arrive' && u.prochain ? `<div class="sub">puis ${esc(u.prochain.client)} le ${dfr(u.prochain.debut)}</div>` : ''}</td>
+      <td class="num">${u.loyer != null ? eur(u.loyer) : '–'}</td><td class="num">${u.prix_grille != null ? eur0(u.prix_grille) : '–'}</td></tr>`).join('')
+    : '<tr><td colspan="8" class="empty">Aucun bureau ne correspond.</td></tr>';
+}

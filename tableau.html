@@ -98,16 +98,31 @@ details ul{margin:6px 0 0;padding-left:16px;font-size:12.5px;color:var(--ink2)}
   .tile{padding:9px 12px 11px}.tile.on{padding:8px 11px 10px}
   .tile .t{font-size:10.5px}.tile .n{font-size:20px;margin-top:2px}.tile .s{display:none}
   .search{width:100%}
-  thead{display:none}
-  table,tbody{display:block;width:100%}
-  tr{display:grid;grid-template-columns:1fr 1fr;gap:4px 14px;border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin-bottom:12px}
-  td{display:block;border:none;padding:4px 0;min-width:0}
-  td.num{text-align:left}
+  table.rec thead{display:none}
+  table.rec,table.rec tbody{display:block;width:100%}
+  table.rec tr{display:grid;grid-template-columns:1fr 1fr;gap:4px 14px;border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin-bottom:12px}
+  table.rec td{display:block;border:none;padding:4px 0;min-width:0}
+  table.rec td.num{text-align:left}
   td.c-retard{order:1} td.c-montant{order:2;text-align:right} td.c-client{order:3;grid-column:1/-1}
   td.c-rel{order:4} td.c-contact{order:5}
-  td.empty{grid-column:1/-1}
-  td[data-l]::before{content:attr(data-l);display:block;color:var(--mute);font-size:11.5px;text-transform:uppercase;letter-spacing:.03em}
+  table.rec td.empty{grid-column:1/-1}
+  table.rec td[data-l]::before{content:attr(data-l);display:block;color:var(--mute);font-size:11.5px;text-transform:uppercase;letter-spacing:.03em}
+  .deux{grid-template-columns:1fr}
 }
+/* occupation */
+.titre{font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--ink2);margin:26px 0 8px}
+.titre .sub{text-transform:none;letter-spacing:0;font-weight:400}
+.tablewrap{overflow-x:auto}
+table.synth td,table.synth th{padding:8px 10px;white-space:nowrap}
+table.synth tr.total td{font-weight:700;border-top:2px solid var(--ink)}
+table.bureaux td{padding:8px 10px}
+td.pos{color:var(--green)} td.neg{color:var(--red)}
+.deux{display:grid;grid-template-columns:1fr 1fr;gap:24px}
+.statut{display:inline-block;border-radius:999px;padding:1px 9px;font-size:12px;font-weight:600;white-space:nowrap}
+.statut.libre{background:#F3F4F6;color:var(--grey)}
+.statut.occupe{background:var(--blue-l);color:var(--blue)}
+.statut.se_libere{background:var(--orange-l);color:var(--orange)}
+.statut.arrive{background:#DCFCE7;color:var(--green)}
 </style>
 </head>
 <body>
@@ -122,6 +137,6 @@ details ul{margin:6px 0 0;padding-left:16px;font-size:12.5px;color:var(--ink2)}
 
 <script src="config.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.118.0/dist/umd/supabase.min.js" integrity="sha384-UagCvVPT5XXA0Hx+nJYUAGBFseHT9zBgpJMSebsAxl9lciTwbT+39j5VfRjdP5Tp" crossorigin="anonymous"></script>
-<script type="module" src="js/tableau.js?v=20261127-2"></script>
+<script type="module" src="js/tableau.js?v=20261127-4"></script>
 </body>
 </html>
