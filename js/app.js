@@ -1,9 +1,9 @@
 // Écran « Pointage » : connexion, dépôt du relevé, analyse (moteur dans le navigateur), validation vers Archie.
 // Portage de src_reference/ui/index.html + server.py sur Supabase.
-import { lireReleve } from './releve.js?v=20261127-3';
-import * as E from './engine.js?v=20261127-3';
-import * as RL from './relances.js?v=20261127-3';
-import * as D from './relances-donnees.js?v=20261127-3';
+import { lireReleve } from './releve.js?v=20261127-4';
+import * as E from './engine.js?v=20261127-4';
+import * as RL from './relances.js?v=20261127-4';
+import * as D from './relances-donnees.js?v=20261127-4';
 
 const C = window.CONFIG || {};
 const XLSX = window.XLSX;
@@ -295,6 +295,19 @@ async function creerLienPermanent() {
   return data;
 }
 async function lienSuiviBox() {
+  // Page rendue publique par Charles (paramètre suivi_public) : une adresse simple, sans clé ni connexion.
+  const { data: pub } = await sb.from('parametres').select('valeur').eq('cle', 'suivi_public').maybeSingle();
+  if (pub?.valeur === true) {
+    $('#modal').innerHTML = `<h3>Page de suivi niveau 5</h3>
+      <p>La page est <b>publique</b> : cette adresse l'ouvre sans clé ni connexion, et elle se met à jour toute seule
+      (à l'ouverture, puis toutes les 10 minutes tant qu'elle reste ouverte).</p>
+      <code class="url" id="url-suivi">${esc(`${location.origin}${location.pathname.replace(/[^/]*$/, '')}suivi.html`)}</code>
+      <p class="sub">Toute personne qui connaît cette adresse voit la liste (clients, contacts, montants). Pour la refermer, demandez-le : c'est un réglage en base, effet immédiat.</p>
+      <div class="row"><button class="btn" onclick="A.fermer()">Fermer</button><button class="btn primary" id="copier">Copier l'adresse</button></div>`;
+    $('#copier').addEventListener('click', async () => { try { await navigator.clipboard.writeText($('#url-suivi').textContent); toast('Adresse copiée'); } catch { toast('Copie impossible : sélectionnez l\'adresse à la main'); } });
+    $('#mbg').classList.add('show');
+    return;
+  }
   let lien;
   try { lien = (await lienPermanent()) || (await creerLienPermanent()); } catch (e) { toast(`Lien indisponible : ${e.message}`); return; }
   const jour = (d) => new Date(d).toLocaleDateString('fr-FR');

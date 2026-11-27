@@ -3,8 +3,8 @@
 // Deux façons d'y accéder :
 //   • par lien (…/suivi.html#cle=…) : aucune connexion ; la fonction « suivi » vérifie la clé et ne renvoie que le niveau 5 ;
 //   • connecté avec un compte @thebureau.paris.
-import * as D from './relances-donnees.js?v=20261127-3';
-import * as RL from './relances.js?v=20261127-3';
+import * as D from './relances-donnees.js?v=20261127-4';
+import * as RL from './relances.js?v=20261127-4';
 
 const C = window.CONFIG || {};
 const $ = (s) => document.querySelector(s);
@@ -21,15 +21,20 @@ let ETAT = null; // { R, chargement, maj, progression, erreur, erreurMaj }
 let TRI = 'retard', Q = '';
 const AUTO_MIN = 10; // minutes entre deux mises à jour automatiques
 const OUVERTS = new Set(); // clients dont la liste de factures est dépliée
-const CLE = new URLSearchParams(location.hash.slice(1)).get('cle'); // lien de suivi sans connexion
+const CLE = new URLSearchParams(location.hash.slice(1)).get('cle'); // ancien lien avec clé (toujours accepté)
+// Trois façons d'obtenir les données, essayées dans cet ordre :
+//   'cle'     : l'adresse contient une clé de lien ;
+//   'public'  : la page est ouverte à tous (paramètre suivi_public, décidé par Charles) — ni clé, ni connexion ;
+//   'session' : la page n'est pas publique → connexion avec un compte autorisé.
+let MODE = CLE ? 'cle' : 'public';
 
 // ---------------------------------------------------------------------------- données : toujours par la fonction « suivi »
-/** Appelle la fonction « suivi » avec la clé du lien ou, à défaut, la session du compte connecté. Elle ne renvoie que le niveau 5. */
+/** Appelle la fonction « suivi » selon le mode d'accès. Elle ne renvoie que les clients au niveau 5. */
 async function appelSuivi(quoi) {
   const headers = { 'Content-Type': 'application/json', apikey: C.SUPABASE_ANON_KEY };
   const corps = { quoi };
-  if (CLE) corps.cle = CLE;
-  else {
+  if (MODE === 'cle') corps.cle = CLE;
+  else if (MODE === 'session') {
     const { data } = await sb.auth.getSession();
     if (!data.session) { const e = new Error('Session expirée : reconnectez-vous.'); e.statut = 401; throw e; }
     headers.Authorization = `Bearer ${data.session.access_token}`;
@@ -39,11 +44,12 @@ async function appelSuivi(quoi) {
   if (!r.ok) { const e = new Error(j.error || `Erreur ${r.status}`); e.statut = r.status; throw e; }
   return { ...j, calcule_le: j.calcule_le ? new Date(j.calcule_le) : null };
 }
-/** Accès refusé : lien révoqué ou inconnu, ou session qui n'est plus valable. */
+/** Accès refusé : lien révoqué ou inconnu, page non publique, ou session qui n'est plus valable. */
 function accesRefuse(e) {
   if (![400, 401, 403].includes(e.statut)) return false;
   ETAT = null;
-  if (CLE) $('#main').innerHTML = `<div class="center"><h2>Lien non valide</h2><p>${esc(e.message)}</p></div>`;
+  if (MODE === 'cle') $('#main').innerHTML = `<div class="center"><h2>Lien non valide</h2><p>${esc(e.message)}</p></div>`;
+  else if (MODE === 'public') demarrerConnexion(); // la page n'est pas (ou plus) publique : accès par compte autorisé
   else vueConnexion(e.message);
   return true;
 }
@@ -189,13 +195,23 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
 // listes de factures dépliées : conservées d'une mise à jour à l'autre
 document.addEventListener('toggle', (e) => { const c = e.target?.dataset?.c; if (c) { if (e.target.open) OUVERTS.add(c); else OUVERTS.delete(c); } }, true);
 
-(async function init() {
-  if (!C.SUPABASE_URL || !C.SUPABASE_ANON_KEY) { $('#main').innerHTML = '<div class="center"><h2>Configuration en attente</h2></div>'; return; }
-  if (CLE) return demarrer(); // par lien : ni connexion, ni compte affiché
+/** Accès par compte (seulement si la page n'est pas publique et qu'il n'y a pas de clé dans l'adresse). */
+let connexionPrete = false;
+async function demarrerConnexion() {
+  MODE = 'session';
   if (!window.supabase) { $('#main').innerHTML = '<div class="center"><h2>Configuration en attente</h2></div>'; return; }
-  sb = window.supabase.createClient(C.SUPABASE_URL, C.SUPABASE_ANON_KEY, { auth: { persistSession: true, detectSessionInUrl: true } });
-  $('#b-out').addEventListener('click', async () => { await sb.auth.signOut(); courant = null; vueConnexion(); });
+  if (!connexionPrete) {
+    connexionPrete = true;
+    sb = window.supabase.createClient(C.SUPABASE_URL, C.SUPABASE_ANON_KEY, { auth: { persistSession: true, detectSessionInUrl: true } });
+    $('#b-out').addEventListener('click', async () => { await sb.auth.signOut(); courant = null; vueConnexion(); });
+    sb.auth.onAuthStateChange((evt, session) => { if (evt === 'SIGNED_IN' || evt === 'SIGNED_OUT') afficher(session); });
+  }
   const { data } = await sb.auth.getSession();
   await afficher(data.session);
-  sb.auth.onAuthStateChange((evt, session) => { if (evt === 'SIGNED_IN' || evt === 'SIGNED_OUT') afficher(session); });
+}
+
+(async function init() {
+  if (!C.SUPABASE_URL || !C.SUPABASE_ANON_KEY) { $('#main').innerHTML = '<div class="center"><h2>Configuration en attente</h2></div>'; return; }
+  // avec une clé ou en accès public : ni connexion, ni compte affiché ; si la page n'est pas publique, demarrer() bascule sur la connexion
+  await demarrer();
 })();
