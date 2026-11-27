@@ -3,7 +3,7 @@
 // navigateur), ou session d'un compte autorisé de l'outil de pointage (sans mot de passe).
 // Toutes les données passent par la fonction « tableau » ; aucune clé ni donnée dans cette page.
 
-import { calculer, BATIMENTS, CATEGORIES, HORIZON_JOURS, revalorisations, ajouterMois, PREAVIS_JOURS, codes } from './occupation.js?v=20261127-8';
+import { calculer, BATIMENTS, CATEGORIES, HORIZON_JOURS, REGLE_OCC, revalorisations, ajouterMois, ajouterJours, PREAVIS_JOURS, codes } from './occupation.js?v=20261127-9';
 
 const C = window.CONFIG || {};
 const $ = (s) => document.querySelector(s);
@@ -321,7 +321,7 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
 // (déclarations de fonctions : disponibles dès le chargement du module)
 function pct(a, b) { return b > 0 ? Math.round((100 * a) / b) + ' %' : '—'; }
 function m2(v) { return Number(v).toLocaleString('fr-FR', { maximumFractionDigits: 0 }) + ' m²'; }
-const STATUTS = { libre: 'Libre', arrive: 'Arrivée signée', occupe: 'Occupé', se_libere: 'Se libère' };
+const STATUTS = { libre: 'Libre', arrive: 'Signé', occupe: 'Occupé', se_libere: 'Sur le départ' }; // libellés du classeur
 const codeBat = (space) => BATIMENTS.find((b) => b.space === space)?.code || '';
 const aujourdhuiParis = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Paris' }).format(new Date());
 
@@ -331,8 +331,8 @@ async function demarrerOccupation() {
   try { etat.inst = await appel('occupation'); } catch (e) { if (sessionPerdue(e)) return; etat.erreur = e.message; }
   if (OCC !== etat) return;
   etat.chargement = false;
-  // recalcul si l'instantané est ancien, ou s'il date d'avant l'onglet Clients
-  if (!etat.erreur && (!etat.inst?.donnees?.clients || Date.now() - Date.parse(etat.inst.calcule_le) > OCC_PERIME_H * 3600000)) actualiserOccupation();
+  // recalcul si l'instantané est ancien, s'il date d'avant l'onglet Clients ou d'une règle de statuts antérieure
+  if (!etat.erreur && (!etat.inst?.donnees?.clients || etat.inst.donnees.regle !== REGLE_OCC || Date.now() - Date.parse(etat.inst.calcule_le) > OCC_PERIME_H * 3600000)) actualiserOccupation();
   else rendu();
 }
 
@@ -412,7 +412,7 @@ function vueOccupation() {
 
   h += `<h3 class="titre">Bureaux</h3><div class="outils">
     <span class="tri" id="f-bat">${[['tous', 'Tous'], ...BATIMENTS.map((b) => [b.space, b.code])].map(([k, t]) => `<button class="${OCC_BAT === k ? 'on' : ''}" data-bat="${k}">${t}</button>`).join('')}</span>
-    <span class="tri" id="f-statut">${[['tous', 'Tous'], ['libre', 'Libres'], ['se_libere', 'Se libèrent'], ['arrive', 'Arrivées'], ['occupe', 'Occupés']].map(([k, t]) => `<button class="${OCC_STATUT === k ? 'on' : ''}" data-statut="${k}">${t}</button>`).join('')}</span>
+    <span class="tri" id="f-statut">${[['tous', 'Tous'], ['libre', 'Libres'], ['se_libere', 'Sur le départ'], ['arrive', 'Signés'], ['occupe', 'Occupés']].map(([k, t]) => `<button class="${OCC_STATUT === k ? 'on' : ''}" data-statut="${k}">${t}</button>`).join('')}</span>
     <input class="search" id="oq" placeholder="Rechercher un bureau, un client…" value="${esc(OCC_Q)}"></div>
     <div class="tablewrap"><table class="bureaux"><thead><tr><th>Bureau</th><th>Étage</th><th class="num">Surface</th><th class="num">Postes</th><th>Statut</th><th>Client</th><th class="num">Loyer HT</th><th class="num">Catalogue</th></tr></thead><tbody id="obureaux"></tbody></table></div>`;
   if (R.non_rattaches?.length) {
@@ -648,13 +648,23 @@ function etatZone(code, bat) {
   const p = n.match(/^P(\d{1,2})$/);
   if (p) {
     const num = Number(p[1]);
+    const nom = `Co-résident poste ${num}`;
+    const L = [];
     for (const c of D.clients || []) for (const a of c.abonnements || []) {
       const m = String(a.nom).match(/poste\s*n[°o]?\s*0*(\d+)/i);
-      if (a.batiment === bat && a.cat === 'coresidents' && !a.a_venir && m && Number(m[1]) === num) {
-        return { statut: 'occupe', client: c.nom, loyer: a.loyer, fin: a.fin, nom: `Co-résident poste ${num}` };
-      }
+      if (a.batiment === bat && a.cat === 'coresidents' && m && Number(m[1]) === num) L.push({ ...a, client: c.nom });
     }
-    return { statut: 'libre', client: '', nom: `Co-résident poste ${num}` };
+    // même règle que les bureaux : « sur le départ » si une fin est connue sans successeur le lendemain, « signé » si seulement à venir
+    const actuel = L.find((a) => !a.a_venir);
+    const suivant = L.filter((a) => a.a_venir && a.debut).sort((x, y) => x.debut.localeCompare(y.debut))[0];
+    if (actuel) {
+      const relaye = actuel.fin && suivant && suivant.debut <= ajouterJours(actuel.fin, 1);
+      const part = actuel.fin && !relaye;
+      return { statut: part ? 'se_libere' : 'occupe', date: part ? actuel.fin : null, client: actuel.client, loyer: actuel.loyer, fin: actuel.fin, nom,
+        prochain: suivant ? { client: suivant.client, debut: suivant.debut } : null };
+    }
+    if (suivant) return { statut: 'arrive', date: suivant.debut, client: suivant.client, loyer: suivant.loyer, nom };
+    return { statut: 'libre', client: '', nom };
   }
   return { statut: 'inconnu', client: '', nom: code };
 }

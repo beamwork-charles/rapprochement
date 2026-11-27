@@ -13,6 +13,7 @@ export const CATEGORIES = [
   ['parking', 'Parking'], ['domiciliation', 'Domiciliation'], ['autres', 'Autres abonnements'],
 ];
 export const HORIZON_JOURS = 90; // « à venir » : départs et arrivées dans les 90 jours
+export const REGLE_OCC = 2; // version de la règle des statuts (2 : celle de la feuille DATA du classeur, 27/11/2026) ; un instantané plus ancien est recalculé
 
 const norm = (s) => String(s ?? '').toUpperCase().replace(/\s+/g, '');
 const arrondi = (x) => Math.round(x * 100) / 100;
@@ -117,10 +118,12 @@ export function calculer(D, aujourdhui) {
     let statut = 'libre', date = null;
     const finOcc = occ ? finEffective(occ) : null;
     const suivant = futurs[0] || null;
+    // même règle que la feuille DATA du classeur « TB - The Bureau » : sans limite de date,
+    // « sur le départ » dès qu'une fin est connue sans successeur le lendemain, « signé » dès qu'un contrat est à venir
     if (occ) {
       statut = 'occupe';
-      if (finOcc && finOcc <= horizon && !(suivant && suivant.debut <= ajouterJours(finOcc, 1))) { statut = 'se_libere'; date = finOcc; }
-    } else if (suivant && suivant.debut <= horizon) { statut = 'arrive'; date = suivant.debut; }
+      if (finOcc && !(suivant && suivant.debut <= ajouterJours(finOcc, 1))) { statut = 'se_libere'; date = finOcc; }
+    } else if (suivant) { statut = 'arrive'; date = suivant.debut; }
     const etage = espaces.get(b.parent)?.nom || '';
     return {
       uuid: b.uuid, space: b.space, nom: b.nom, etage, surface: b.surface || 0, postes: b.postes || 0, prix_grille: prixGrille,
@@ -171,12 +174,12 @@ export function calculer(D, aujourdhui) {
   }
 
   return {
-    aujourdhui, mois, horizon,
+    regle: REGLE_OCC, aujourdhui, mois, horizon,
     batiments, total, unites,
     clients: calculerClients(abos, D.clients || [], espaces, aujourdhui),
     a_venir: {
-      departs: unites.filter((u) => u.statut === 'se_libere').sort((a, b) => a.date.localeCompare(b.date)),
-      arrivees: unites.filter((u) => u.statut === 'arrive' || (u.prochain && u.prochain.debut <= horizon && u.statut !== 'arrive'))
+      departs: unites.filter((u) => u.statut === 'se_libere' && u.date <= horizon).sort((a, b) => a.date.localeCompare(b.date)),
+      arrivees: unites.filter((u) => u.prochain && u.prochain.debut <= horizon)
         .map((u) => ({ ...u, date: u.prochain?.debut || u.date, client: u.prochain?.client || u.client, loyer: u.prochain?.loyer ?? u.loyer }))
         .sort((a, b) => a.date.localeCompare(b.date)),
     },
