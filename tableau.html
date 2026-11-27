@@ -138,6 +138,27 @@ tr.a-venir td{color:var(--green)}
 .statut.rv-se_termine{background:#F3F4F6;color:var(--grey)}
 .statut.rv-bloquee{background:#F3F4F6;color:var(--ink2)}
 .statut.rv-a_programmer{background:#EDE9FE;color:var(--violet)}
+/* plan */
+.legende{display:flex;gap:16px;flex-wrap:wrap;font-size:12.5px;color:var(--ink2);margin:4px 0 10px}
+.legende span{display:inline-flex;align-items:center;gap:6px}
+.legende i{display:inline-block;width:14px;height:11px;border-radius:3px;border:1px solid}
+.etage{margin:14px 0 22px}
+.etage-t{font-size:13px;margin-bottom:6px}
+svg.plan{width:100%;height:auto;display:block;background:#fff}
+svg.plan rect{stroke-width:.35;rx:.4}
+svg.plan .pz{cursor:pointer}
+svg.plan .pz:hover rect{stroke-width:.8}
+.pz-occupe,i.pz-occupe{fill:#DBEAFE;stroke:#1D4ED8;background:#DBEAFE;border-color:#1D4ED8}
+.pz-se_libere,i.pz-se_libere{fill:#FFEDD5;stroke:#C2410C;background:#FFEDD5;border-color:#C2410C}
+.pz-arrive,i.pz-arrive{fill:#DCFCE7;stroke:#15803D;background:#DCFCE7;border-color:#15803D}
+.pz-libre,i.pz-libre{fill:#FFFFFF;stroke:#9CA3AF;background:#fff;border-color:#9CA3AF}
+.pz-inconnu{fill:#FEF9C3;stroke:#CA8A04}
+.pz-commun,i.pz-commun{fill:#F3F4F6;stroke:#E5E7EB;background:#F3F4F6;border-color:#E5E7EB}
+svg.plan rect.choisi{stroke:#111827;stroke-width:1.1}
+.pz-tc{text-anchor:middle;dominant-baseline:middle;font-size:2.2px;fill:#6B7280;pointer-events:none}
+.pz-code{font-weight:700;fill:#111827}
+.pz-tx{text-anchor:middle;dominant-baseline:middle;fill:#374151;pointer-events:none}
+.choix{border:1px solid var(--line);border-radius:10px;padding:10px 14px;background:var(--soft);font-size:13.5px;margin:6px 0 4px}
 .obs{margin-top:4px;font-size:12px;color:var(--ink2);background:var(--yellow-l);border-radius:6px;padding:3px 7px;max-width:420px}
 .deux{display:grid;grid-template-columns:1fr 1fr;gap:24px}
 .statut{display:inline-block;border-radius:999px;padding:1px 9px;font-size:12px;font-weight:600;white-space:nowrap}
@@ -159,6 +180,6 @@ tr.a-venir td{color:var(--green)}
 
 <script src="config.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.118.0/dist/umd/supabase.min.js" integrity="sha384-UagCvVPT5XXA0Hx+nJYUAGBFseHT9zBgpJMSebsAxl9lciTwbT+39j5VfRjdP5Tp" crossorigin="anonymous"></script>
-<script type="module" src="js/tableau.js?v=20261127-9"></script>
+<script type="module" src="js/tableau.js?v=20261127-11"></script>
 </body>
 </html>

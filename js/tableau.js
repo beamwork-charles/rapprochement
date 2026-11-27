@@ -3,7 +3,7 @@
 // navigateur), ou session d'un compte autorisé de l'outil de pointage (sans mot de passe).
 // Toutes les données passent par la fonction « tableau » ; aucune clé ni donnée dans cette page.
 
-import { calculer, BATIMENTS, CATEGORIES, HORIZON_JOURS, revalorisations, ajouterMois, PREAVIS_JOURS } from './occupation.js?v=20261127-8';
+import { calculer, BATIMENTS, CATEGORIES, HORIZON_JOURS, revalorisations, ajouterMois, PREAVIS_JOURS, codes } from './occupation.js?v=20261127-8';
 
 const C = window.CONFIG || {};
 const $ = (s) => document.querySelector(s);
@@ -32,6 +32,7 @@ let OCC = null; // { inst: { calcule_le, par, donnees }, chargement, maj, progre
 let OCC_BAT = 'tous', OCC_STATUT = 'tous', OCC_Q = '';
 let CLI_BAT = 'tous', CLI_TRI = 'loyer', CLI_Q = '';
 let RV_STATUT = 'a_traiter', RV_CAT = 'bureaux', RV_BAT = 'tous', RV_Q = '';
+let PLANS = null, PLAN_BAT = 'TB1', PLAN_CHOIX = null; // plans d'étage, bâtiment affiché, bureau cliqué
 const CLI_OUVERTS = new Set(); // fiches clients dépliées
 const OCC_PERIME_H = 12; // l'instantané est recalculé à l'ouverture s'il a plus de 12 heures
 const OUVERTS = new Set();
@@ -104,6 +105,7 @@ function entrer(prenom) {
   demarrerRecouvrement();
   demarrerOccupation();
   chargerRegles();
+  chargerPlans();
 }
 
 // ---------------------------------------------------------------------------- recouvrement (données de la fonction « suivi »)
@@ -146,12 +148,14 @@ function tuiles() {
     occupation: T ? pct(T.surface_occupee, T.surface) : (enCours ? '…' : ''),
     clients: K ? String(K.length) : (enCours ? '…' : ''),
     revalo: RV ? String(RV.filter((r) => r.cat === 'bureaux' && A_TRAITER.has(r.statut)).length) : (enCours ? '…' : ''),
+    plan: PLANS ? String(PLANS.reduce((s, p) => s + p.etages.length, 0)) : '',
   };
   const sous = {
     recouvrement: R ? `clients au niveau 5 · ${eur0(R.clients.reduce((s, c) => s + c.total, 0))}` : 'chargement',
     occupation: T ? `surface occupée · ${T.libres} bureaux libres` : (enCours ? 'chargement' : 'en préparation'),
     clients: K ? `clients en cours · ${eur0(K.reduce((s, c) => s + c.loyer, 0))} / mois` : (enCours ? 'chargement' : 'en préparation'),
     revalo: RV ? `bureaux à traiter · ${RV.filter((r) => r.cat === 'bureaux' && r.statut === 'programmee').length} hausses programmées` : (enCours ? 'chargement' : 'en préparation'),
+    plan: PLANS ? `étages dessinés · ${PLANS.length} bâtiments` : 'chargement',
   };
   return `<nav class="tiles">${ONGLETS.map((o) => `<a class="tile ${o.id} ${ONGLET === o.id ? 'on' : ''}" href="#${o.id}">
     <div class="t">${esc(o.titre)}</div><div class="n ${compteur[o.id] ? '' : 'vide'}">${esc(compteur[o.id] || '—')}</div>
@@ -163,6 +167,11 @@ function rendu() {
   const m = $('#main');
   const defilement = window.scrollY, recherche = ['q', 'oq', 'cq', 'rq'].includes(document.activeElement?.id) ? document.activeElement.selectionStart : null;
   let h = tuiles();
+  if (ONGLET === 'plan') {
+    m.innerHTML = h + vuePlan();
+    window.scrollTo(0, defilement);
+    return;
+  }
   if (ONGLET === 'revalo') {
     m.innerHTML = h + vueRevalo();
     const q = $('#rq');
@@ -258,8 +267,10 @@ function ligne(c, R) {
 
 // ---------------------------------------------------------------------------- événements
 document.addEventListener('click', (e) => {
-  const t = e.target.closest('[data-tri], #b-actualiser, #b-occ-actualiser, [data-bat], [data-statut], [data-cbat], [data-ctri], [data-fiche], [data-rstatut], [data-rcat], [data-rbat]');
+  const t = e.target.closest('[data-tri], #b-actualiser, #b-occ-actualiser, [data-bat], [data-statut], [data-cbat], [data-ctri], [data-fiche], [data-rstatut], [data-rcat], [data-rbat], [data-pbat], [data-pz]');
   if (!t) return;
+  if (t.dataset.pbat) { PLAN_BAT = t.dataset.pbat; PLAN_CHOIX = null; rendu(); return; }
+  if (t.dataset.pz) { PLAN_CHOIX = PLAN_CHOIX === t.dataset.pz ? null : t.dataset.pz; afficherChoixPlan(); return; }
   if (t.dataset.rstatut || t.dataset.rcat || t.dataset.rbat) {
     if (t.dataset.rstatut) RV_STATUT = t.dataset.rstatut;
     if (t.dataset.rcat) RV_CAT = t.dataset.rcat;
@@ -611,4 +622,88 @@ function lignesRevaloTable() {
       <td>${prochaine}</td>
       <td class="num">${r.gain ? '+' + eur(r.gain) : '–'}</td></tr>`;
   }).join('') : '<tr><td colspan="8" class="empty">Aucun contrat ne correspond.</td></tr>';
+}
+
+// ---------------------------------------------------------------------------- plan
+// Plans d'étage redessinés à partir du classeur « Plan occupation The Bureau » (géométrie en base, fonction « tableau »),
+// chaque bureau coloré selon l'occupation calculée depuis Archie (onglet Occupation).
+const PLAN_X = 1.3; // une colonne du classeur est un peu plus large qu'une ligne n'est haute
+const PLAN_STATUTS = { occupe: 'Occupé', se_libere: 'Se libère', arrive: 'Arrivée signée', libre: 'Libre', inconnu: 'Non trouvé dans Archie' };
+const normCode = (s) => String(s ?? '').toUpperCase().replace(/\s+/g, '');
+
+async function chargerPlans() {
+  try { PLANS = (await appel('plans')).plans || []; rendu(); } catch (e) { if (!sessionPerdue(e)) PLANS = []; }
+}
+
+/** Bureau Archie (onglet Occupation) correspondant à un code du plan ; postes de co-résident « P02 » : abonnement « poste n°02 ». */
+function etatZone(code, bat) {
+  const D = OCC?.inst?.donnees; if (!D) return null;
+  const space = BATIMENTS.find((b) => b.code === bat)?.space;
+  const n = normCode(code);
+  const U = D.unites.filter((u) => u.space === space);
+  let u = U.find((x) => normCode(x.nom) === n);
+  if (!u) { const cs = codes(code); if (cs.length) u = U.find((x) => codes(x.nom).some((c) => cs.includes(c))) || U.find((x) => cs.some((c) => normCode(x.nom).startsWith(c))); }
+  if (u) return { statut: u.statut, client: u.client, loyer: u.loyer, fin: u.fin, date: u.date, surface: u.surface, postes: u.postes, nom: u.nom, prochain: u.prochain };
+  const p = n.match(/^P(\d{1,2})$/);
+  if (p) {
+    const num = Number(p[1]);
+    for (const c of D.clients || []) for (const a of c.abonnements || []) {
+      const m = String(a.nom).match(/poste\s*n[°o]?\s*0*(\d+)/i);
+      if (a.batiment === bat && a.cat === 'coresidents' && !a.a_venir && m && Number(m[1]) === num) {
+        return { statut: 'occupe', client: c.nom, loyer: a.loyer, fin: a.fin, nom: `Co-résident poste ${num}` };
+      }
+    }
+    return { statut: 'libre', client: '', nom: `Co-résident poste ${num}` };
+  }
+  return { statut: 'inconnu', client: '', nom: code };
+}
+
+function vuePlan() {
+  if (!PLANS) return `<div class="center"><div class="big-spin"></div><p>Chargement des plans…</p></div>`;
+  if (!PLANS.length) return `<div class="empty">Aucun plan enregistré.</div>`;
+  const P = PLANS.find((p) => p.batiment === PLAN_BAT) || PLANS[0];
+  const B = BATIMENTS.find((b) => b.code === P.batiment);
+  const occ = OCC?.inst?.donnees;
+  let h = `<div class="outils" style="margin-top:16px"><span class="tri">${PLANS.map((p) => `<button class="${p.batiment === P.batiment ? 'on' : ''}" data-pbat="${p.batiment}">${p.batiment}</button>`).join('')}</span>
+    <span class="sub">${esc(B?.nom || '')}${occ ? ` · occupation calculée le ${esc(quand(new Date(OCC.inst.calcule_le)))}` : ' · occupation en cours de chargement'}</span></div>
+    <div class="legende">${['occupe', 'se_libere', 'arrive', 'libre'].map((s) => `<span><i class="pz-${s}"></i>${PLAN_STATUTS[s]}</span>`).join('')}<span><i class="pz-commun"></i>Communs</span></div>
+    <div id="plan-choix"></div>`;
+  const largeurMax = Math.max(...P.etages.map((e) => e.largeur)) * PLAN_X; // même échelle pour tous les étages du bâtiment
+  for (const e of P.etages) {
+    const W = e.largeur * PLAN_X, H = e.hauteur;
+    let occupes = 0, libres = 0;
+    const formes = e.zones.map((z, i) => {
+      const x = z.x * PLAN_X, y = z.y, w = z.w * PLAN_X, hh = z.h;
+      if (!z.code) {
+        const t = z.libelle.length > Math.floor(w / 1.6) ? z.libelle.slice(0, Math.max(3, Math.floor(w / 1.6))) + '…' : z.libelle;
+        return `<g><rect class="pz-commun" x="${x}" y="${y}" width="${w}" height="${hh}"/>${w > 6 && hh > 2.5 ? `<text class="pz-tc" x="${x + w / 2}" y="${y + hh / 2}">${esc(t)}</text>` : ''}</g>`;
+      }
+      const s = etatZone(z.code, P.batiment);
+      const st = s?.statut || 'inconnu';
+      if (st === 'occupe' || st === 'se_libere') occupes++; else if (st === 'libre' || st === 'arrive') libres++;
+      const cle = `${P.batiment}|${z.code}`;
+      const taille = Math.min(3.4, hh / 2.6, w / 4);
+      const client = s?.client && hh > 7 && w > 10 ? `<text class="pz-tx" x="${x + w / 2}" y="${y + hh / 2 + taille}" style="font-size:${(taille * 0.75).toFixed(2)}px">${esc(s.client.length > Math.floor(w / 2) ? s.client.slice(0, Math.floor(w / 2)) + '…' : s.client)}</text>` : '';
+      return `<g class="pz" data-pz="${esc(cle)}"><title>${esc(z.code)} · ${esc(PLAN_STATUTS[st])}${s?.client ? ' · ' + esc(s.client) : ''}</title>
+        <rect class="pz-${st}${PLAN_CHOIX === cle ? ' choisi' : ''}" x="${x}" y="${y}" width="${w}" height="${hh}"/>
+        <text class="pz-tc pz-code" x="${x + w / 2}" y="${y + hh / 2 - (client ? taille * 0.4 : 0)}" style="font-size:${taille.toFixed(2)}px">${esc(z.code)}</text>${client}</g>`;
+    }).join('');
+    h += `<div class="etage"><div class="etage-t"><b>${esc(e.etage)}</b> <span class="sub">${occupes} occupé${occupes > 1 ? 's' : ''} · ${libres} libre${libres > 1 ? 's' : ''}</span></div>
+      <svg class="plan" viewBox="-0.5 -0.5 ${W + 1} ${H + 1}" preserveAspectRatio="xMinYMin meet" style="width:${(100 * W / largeurMax).toFixed(1)}%;max-width:${Math.round(W * 8)}px">${formes}</svg></div>`;
+  }
+  return h + '<div style="height:60px"></div>';
+}
+
+/** Détail du bureau cliqué (sans redessiner le plan). */
+function afficherChoixPlan() {
+  document.querySelectorAll('.pz rect').forEach((r) => r.classList.toggle('choisi', r.parentElement.dataset.pz === PLAN_CHOIX));
+  const el = $('#plan-choix'); if (!el) return;
+  if (!PLAN_CHOIX) { el.innerHTML = ''; return; }
+  const [bat, code] = PLAN_CHOIX.split('|');
+  const s = etatZone(code, bat) || { statut: 'inconnu' };
+  const rv = (lignesRevalo() || []).find((r) => r.batiment === bat && r.client === s.client && (r.bureaux || []).some((b) => normCode(b) === normCode(s.nom)));
+  el.innerHTML = `<div class="choix"><b>${esc(code)}</b> <span class="statut ${s.statut === 'inconnu' ? '' : s.statut}">${esc(PLAN_STATUTS[s.statut])}${s.date ? ' ' + dfr(s.date) : ''}</span>
+    ${s.client ? ` · <b>${esc(s.client)}</b>` : ''}${s.loyer != null ? ` · ${eur(s.loyer)} HT / mois` : ''}${s.surface ? ` · ${m2(s.surface)}` : ''}${s.postes ? ` · ${s.postes} postes` : ''}
+    ${s.fin ? `<div class="sub">Fin du contrat le ${dfr(s.fin)}</div>` : ''}${s.prochain ? `<div class="sub">Puis ${esc(s.prochain.client)} le ${dfr(s.prochain.debut)}</div>` : ''}
+    ${rv ? `<div class="sub">Revalorisation : ${esc(RV_STATUTS[rv.statut])}${rv.prochaine ? ` · ${dfr(rv.prochaine.date)} +${rv.prochaine.pct} %` : rv.anniversaire ? ` · anniversaire le ${dfr(rv.anniversaire)}` : ''}</div>` : ''}</div>`;
 }
