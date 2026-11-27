@@ -3,7 +3,7 @@
 // navigateur), ou session d'un compte autorisé de l'outil de pointage (sans mot de passe).
 // Toutes les données passent par la fonction « tableau » ; aucune clé ni donnée dans cette page.
 
-import { calculer, BATIMENTS, CATEGORIES, HORIZON_JOURS, revalorisations, ajouterMois, PREAVIS_JOURS } from './occupation.js?v=20261127-7';
+import { calculer, BATIMENTS, CATEGORIES, HORIZON_JOURS, revalorisations, ajouterMois, PREAVIS_JOURS } from './occupation.js?v=20261127-8';
 
 const C = window.CONFIG || {};
 const $ = (s) => document.querySelector(s);
@@ -103,6 +103,7 @@ function entrer(prenom) {
   rendu();
   demarrerRecouvrement();
   demarrerOccupation();
+  chargerRegles();
 }
 
 // ---------------------------------------------------------------------------- recouvrement (données de la fonction « suivi »)
@@ -144,7 +145,7 @@ function tuiles() {
     recouvrement: R ? String(R.clients.length) : '…',
     occupation: T ? pct(T.surface_occupee, T.surface) : (enCours ? '…' : ''),
     clients: K ? String(K.length) : (enCours ? '…' : ''),
-    revalo: RV ? String(RV.filter((r) => r.cat === 'bureaux' && (r.statut === 'en_retard' || r.statut === 'a_prevenir')).length) : (enCours ? '…' : ''),
+    revalo: RV ? String(RV.filter((r) => r.cat === 'bureaux' && A_TRAITER.has(r.statut)).length) : (enCours ? '…' : ''),
   };
   const sous = {
     recouvrement: R ? `clients au niveau 5 · ${eur0(R.clients.reduce((s, c) => s + c.total, 0))}` : 'chargement',
@@ -514,15 +515,22 @@ function ligneClient(c, impaye) {
 
 // ---------------------------------------------------------------------------- revalorisation (lecture seule)
 const RV_STATUTS = {
-  en_retard: 'En retard', a_prevenir: 'À prévenir', programmee: 'Programmée', a_jour: 'À jour', se_termine: 'Se termine avant',
+  en_retard: 'En retard', a_programmer: 'À programmer', a_prevenir: 'À prévenir', programmee: 'Programmée', a_jour: 'À jour',
+  bloquee: 'Bloquée', se_termine: 'Se termine avant',
 };
+const A_TRAITER = new Set(['en_retard', 'a_programmer', 'a_prevenir']);
+let REGLES = null; // règles du classeur (fonction « tableau », quoi: 'regles')
+async function chargerRegles() {
+  try { REGLES = (await appel('regles')).regles || []; RV_CACHE = { inst: null, rows: null }; rendu(); }
+  catch (e) { if (!sessionPerdue(e)) REGLES = []; }
+}
 const MOIS = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'];
 let RV_CACHE = { inst: null, rows: null };
 /** Contrats et statuts de revalorisation, recalculés seulement quand l'instantané change. */
 function lignesRevalo() {
   const I = OCC?.inst;
   if (!I?.donnees?.clients) return null;
-  if (RV_CACHE.inst !== I) RV_CACHE = { inst: I, rows: revalorisations(I.donnees.clients, I.donnees.aujourdhui || aujourdhuiParis()) };
+  if (RV_CACHE.inst !== I) RV_CACHE = { inst: I, rows: revalorisations(I.donnees.clients, aujourdhuiParis(), REGLES || []) };
   return RV_CACHE.rows;
 }
 
@@ -535,16 +543,18 @@ function vueRevalo() {
   let h = `<div class="etat">${I?.calcule_le && RV ? `<span>Calculé le <b>${esc(quand(new Date(I.calcule_le)))}</b>${I.par ? ` par ${esc(I.par)}` : ''}</span>` : '<span>Pas encore calculé</span>'}
     ${etatArchie}<button class="btn sm" id="b-occ-actualiser" ${OCC.maj ? 'disabled' : ''}>Actualiser</button></div>`;
   if (!RV) return h + `<div class="empty">Lecture d'Archie en cours (environ 20 secondes)…</div>`;
-  h += `<div class="info">Lecture seule, d'après le calendrier des prix d'Archie. Les hausses faites en réduisant une remise et les règles propres à certains contrats (blocage, plafond) n'y figurent pas.</div>`;
+  const nRegles = RV.filter((r) => r.regle).length;
+  h += `<div class="info">Lecture seule. Calendrier des prix d'Archie, complété par les règles du classeur « Recap +3% Contrats »${REGLES ? ` (${REGLES.length} lignes, rapprochées de ${nRegles} contrats)` : ' (chargement…)'} : préavis, blocages, plafond et dates de dernière augmentation, y compris celles faites en réduisant une remise.</div>`;
 
   const bureaux = RV.filter((r) => r.cat === 'bureaux');
   const n = (s, l = bureaux) => l.filter((r) => r.statut === s);
   const somme = (l) => l.reduce((s, r) => s + r.gain, 0);
   h += `<div class="resume">
     <div><div class="n neg">${n('en_retard').length}</div><div class="l">bureaux en retard · +${eur0(somme(n('en_retard')))} / mois à +3 %</div></div>
-    <div><div class="n">${n('a_prevenir').length}</div><div class="l">à prévenir sous ${PREAVIS_JOURS} jours</div></div>
+    <div><div class="n">${n('a_programmer').length + n('a_prevenir').length}</div><div class="l">à programmer ou à prévenir</div></div>
     <div><div class="n pos">${n('programmee').length}</div><div class="l">hausses programmées · +${eur0(somme(n('programmee')))} / mois</div></div>
-    <div><div class="n">${n('a_jour').length}</div><div class="l">bureaux à jour</div></div></div>`;
+    <div><div class="n">${n('a_jour').length}</div><div class="l">bureaux à jour</div></div>
+    <div><div class="n">${n('bloquee').length}</div><div class="l">bloqués (contrat, plafond)</div></div></div>`;
 
   // calendrier des 12 prochains mois (tous contrats) : hausses programmées et anniversaires sans hausse programmée
   const auj = I.donnees.aujourdhui || aujourdhuiParis();
@@ -560,7 +570,7 @@ function vueRevalo() {
     </tbody></table></div>`;
 
   h += `<h3 class="titre">Contrats</h3><div class="outils">
-    <span class="tri">${[['a_traiter', 'À traiter'], ['en_retard', 'En retard'], ['a_prevenir', 'À prévenir'], ['programmee', 'Programmées'], ['a_jour', 'À jour'], ['tous', 'Tous']].map(([k, t]) => `<button data-rstatut="${k}">${t}</button>`).join('')}</span>
+    <span class="tri">${[['a_traiter', 'À traiter'], ['en_retard', 'En retard'], ['a_programmer', 'À programmer'], ['a_prevenir', 'À prévenir'], ['programmee', 'Programmées'], ['a_jour', 'À jour'], ['bloquee', 'Bloquées'], ['tous', 'Tous']].map(([k, t]) => `<button data-rstatut="${k}">${t}</button>`).join('')}</span>
     <span class="tri">${[['bureaux', 'Bureaux'], ['coresidents', 'Co-résidents'], ['itinerants', 'Itinérants'], ['parking', 'Parking'], ['domiciliation', 'Domiciliation'], ['tous', 'Tout']].map(([k, t]) => `<button data-rcat="${k}">${t}</button>`).join('')}</span>
     <span class="tri">${[['tous', 'Tous'], ...BATIMENTS.map((b) => [b.code, b.code])].map(([k, t]) => `<button data-rbat="${k}">${t}</button>`).join('')}</span>
     <input class="search" id="rq" placeholder="Rechercher un client, un bureau…" value="${esc(RV_Q)}"></div>
@@ -576,8 +586,8 @@ function lignesRevaloTable() {
   document.querySelectorAll('[data-rcat]').forEach((b) => b.classList.toggle('on', b.dataset.rcat === RV_CAT));
   document.querySelectorAll('[data-rbat]').forEach((b) => b.classList.toggle('on', b.dataset.rbat === RV_BAT));
   const q = RV_Q.trim().toLowerCase();
-  const ordre = { en_retard: 0, a_prevenir: 1, programmee: 2, a_jour: 3, se_termine: 4 };
-  const L = RV.filter((r) => (RV_STATUT === 'tous' || r.statut === RV_STATUT || (RV_STATUT === 'a_traiter' && (r.statut === 'en_retard' || r.statut === 'a_prevenir')))
+  const ordre = { en_retard: 0, a_programmer: 1, a_prevenir: 2, programmee: 3, a_jour: 4, bloquee: 5, se_termine: 6 };
+  const L = RV.filter((r) => (RV_STATUT === 'tous' || r.statut === RV_STATUT || (RV_STATUT === 'a_traiter' && A_TRAITER.has(r.statut)))
     && (RV_CAT === 'tous' || r.cat === RV_CAT) && (RV_BAT === 'tous' || r.batiment === RV_BAT)
     && (!q || [r.client, r.contrat, ...(r.bureaux || [])].join(' ').toLowerCase().includes(q)))
     .sort((a, b) => ordre[a.statut] - ordre[b.statut] || (a.anniversaire || '9999').localeCompare(b.anniversaire || '9999'));
@@ -587,14 +597,17 @@ function lignesRevaloTable() {
       ? `${dfr(r.prochaine.date)} · ${r.prochaine.pct > 0 ? '+' : ''}${r.prochaine.pct} %<div class="sub">${eur(r.prochaine.de)} → ${eur(r.prochaine.a)} (prix de base)</div>`
       : r.statut === 'en_retard' ? `<span class="neg">anniversaire passé le ${dfr(r.anniversaire)}</span>`
         : r.statut === 'se_termine' ? `<span class="sub">fin du contrat le ${dfr(r.fin)}</span>`
-          : `<span class="sub">anniversaire le ${dfr(r.anniversaire)}</span>`;
+          : r.statut === 'bloquee' ? `<span class="sub">${esc(r.motif)}</span>`
+            : r.statut === 'a_programmer' ? `<span class="neg">${dfr(r.anniversaire)} : notifiée, absente d'Archie</span>`
+              : `<span class="sub">anniversaire le ${dfr(r.anniversaire)}</span>`;
+    const obs = r.regle?.observations;
     return `<tr>
-      <td><span class="statut rv-${r.statut}">${RV_STATUTS[r.statut]}</span></td>
+      <td><span class="statut rv-${r.statut}">${RV_STATUTS[r.statut]}</span>${r.regle?.preavis_mois >= 2 ? '<div class="sub">préavis 2 mois</div>' : ''}</td>
       <td><b>${esc(r.client)}</b></td>
-      <td>${esc(r.contrat)}${r.remise ? `<div class="sub">remise ${r.remise} %${r.fin_remise ? ` jusqu'au ${dfr(r.fin_remise)}` : ''}</div>` : ''}${r.fin && r.statut !== 'se_termine' ? `<div class="sub">fin du contrat le ${dfr(r.fin)}</div>` : ''}</td>
+      <td>${esc(r.contrat)}${r.remise ? `<div class="sub">remise ${r.remise} %${r.fin_remise ? ` jusqu'au ${dfr(r.fin_remise)}` : ''}</div>` : ''}${r.fin && r.statut !== 'se_termine' ? `<div class="sub">fin du contrat le ${dfr(r.fin)}</div>` : ''}${obs ? `<div class="obs" title="${esc(obs)}">${esc(obs.length > 140 ? obs.slice(0, 140) + '…' : obs)}</div>` : ''}</td>
       <td>${esc(r.batiment)}</td>
       <td class="num">${eur(r.loyer)}</td>
-      <td>${r.derniere ? dfr(r.derniere) : `<span class="sub">aucune depuis le ${dfr(r.debut)}</span>`}</td>
+      <td>${r.derniere ? `${dfr(r.derniere)}${r.derniere_source === 'classeur' ? '<div class="sub">selon le classeur</div>' : ''}` : `<span class="sub">aucune depuis le ${dfr(r.debut)}</span>`}</td>
       <td>${prochaine}</td>
       <td class="num">${r.gain ? '+' + eur(r.gain) : '–'}</td></tr>`;
   }).join('') : '<tr><td colspan="8" class="empty">Aucun contrat ne correspond.</td></tr>';

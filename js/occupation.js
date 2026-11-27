@@ -268,28 +268,74 @@ const ecart = (a, b) => Math.round((Date.parse(a + 'T12:00:00Z') - Date.parse(b 
  *   se_termine : le contrat finit avant son prochain anniversaire.
  * Les hausses obtenues en réduisant la remise ne figurent pas dans la grille et ne sont donc pas vues.
  */
-export function revalorisations(clients, aujourdhui) {
+export const SANS_PREAVIS_JOURS = 30; // contrat sans préavis de revalorisation : à préparer 30 jours avant
+
+/** Nom de société comparable : majuscules, sans ponctuation ni forme juridique. */
+export const nomSociete = (s) => String(s ?? '').toUpperCase().replace(/\(.*?\)/g, ' ')
+  .replace(/[^A-Z0-9]+/g, ' ').replace(/\b(SAS|SASU|SARL|SA|SCI|SELARL|EURL|LLP|LLC|LTD|LIMITED|INC|GMBH|SPRL|EI|FRANCE)\b/g, ' ').replace(/\s+/g, ' ').trim();
+const memeSociete = (a, b) => { const x = nomSociete(a), y = nomSociete(b); return !!x && !!y && (x === y || x.startsWith(y) || y.startsWith(x)); };
+const SERVICES = { bureau: 'bureaux', 'co-résident': 'coresidents', 'co-resident': 'coresidents', itinérant: 'itinerants', itinerant: 'itinerants', parking: 'parking', domiciliation: 'domiciliation' };
+
+/** Règle du classeur pour un contrat : même bâtiment et même bureau, sinon même société et même type de service. */
+export function regleDe(a, client, regles) {
+  const R = (regles || []).filter((r) => r.batiment === a.batiment);
+  if (a.bureaux?.length) {
+    const L = R.filter((r) => codes(r.bureau).some((c) => a.bureaux.some((b) => norm(b) === c || norm(b).startsWith(c))));
+    return L.find((r) => memeSociete(r.societe, client)) || L[0] || null;
+  }
+  return R.find((r) => memeSociete(r.societe, client) && SERVICES[String(r.service || '').toLowerCase()] === a.cat) || null;
+}
+
+/**
+ * Statut de revalorisation de chaque contrat, d'après le calendrier des prix d'Archie et les règles du classeur :
+ *   programmee   : hausse inscrite dans Archie ;
+ *   bloquee      : pas de revalorisation dans le contrat, au plafond, ou « pas avant le … » ;
+ *   a_programmer : hausse notifiée au classeur pour une date à venir, absente d'Archie ;
+ *   se_termine   : le contrat finit avant son prochain anniversaire ;
+ *   en_retard    : 12 mois passés depuis la dernière hausse (Archie ou classeur) ou le début, rien de programmé ;
+ *   a_prevenir   : anniversaire proche (70 jours avec préavis de 2 mois, 30 jours sans préavis) ;
+ *   a_jour.
+ */
+export function revalorisations(clients, aujourdhui, regles = []) {
   const rows = [];
   for (const c of clients || []) {
     for (const a of c.abonnements || []) {
       if (a.a_venir || !(a.loyer > 0)) continue;
-      const base = a.derniere_hausse || a.debut;
+      const r = regleDe(a, c.nom, regles);
+      // dernière hausse : la plus récente entre Archie et le classeur (qui note aussi les hausses par réduction de remise)
+      const derniereClasseur = r?.derniere && r.derniere <= aujourdhui ? r.derniere : null;
+      const derniere = [a.derniere_hausse, derniereClasseur].filter(Boolean).sort().pop() || null;
+      const base = derniere || a.debut;
       let anniv = base ? ajouterMois(base, 12) : null;
-      let statut, retard = null, gain = 0;
+      const fenetre = r ? (r.preavis_mois >= 2 ? PREAVIS_JOURS : SANS_PREAVIS_JOURS) : PREAVIS_JOURS;
+      const notifiee = r && r.derniere && r.derniere > aujourdhui && /revalo|indexation|notifi/i.test(r.observations || '');
+      let statut, retard = null, gain = 0, motif = null;
+      const plusTroisPourcent = Math.round(a.loyer * 3) / 100;
       if (a.prochaine_hausse) {
         statut = 'programmee'; anniv = a.prochaine_hausse.date;
         gain = Math.round(a.loyer * a.prochaine_hausse.pct) / 100;
+      } else if (r && !r.revalorisable) {
+        statut = 'bloquee'; motif = 'Pas de revalorisation dans le contrat';
+      } else if (r?.plafond) {
+        statut = 'bloquee'; motif = 'Au plafond';
+      } else if (r?.pas_avant && r.pas_avant > aujourdhui && ecart(r.pas_avant, aujourdhui) > fenetre) {
+        statut = 'bloquee'; motif = `Pas de hausse avant le ${r.pas_avant.slice(8, 10)}/${r.pas_avant.slice(5, 7)}/${r.pas_avant.slice(0, 4)}`; anniv = r.pas_avant;
+      } else if (notifiee) {
+        statut = 'a_programmer'; anniv = r.derniere; gain = plusTroisPourcent;
+        motif = 'Hausse notifiée (classeur) mais pas programmée dans Archie';
       } else if (anniv && a.fin && a.fin < anniv) {
         statut = 'se_termine';
       } else if (anniv && anniv <= aujourdhui) {
-        statut = 'en_retard'; retard = ecart(aujourdhui, anniv); gain = Math.round(a.loyer * 3) / 100;
-      } else if (anniv && ecart(anniv, aujourdhui) <= PREAVIS_JOURS) {
-        statut = 'a_prevenir'; gain = Math.round(a.loyer * 3) / 100;
+        statut = 'en_retard'; retard = ecart(aujourdhui, anniv); gain = plusTroisPourcent;
+      } else if (anniv && ecart(anniv, aujourdhui) <= fenetre) {
+        statut = 'a_prevenir'; gain = plusTroisPourcent;
       } else statut = 'a_jour';
       rows.push({
         cle: c.cle, client: c.nom, contrat: a.nom, batiment: a.batiment, cat: a.cat, bureaux: a.bureaux,
         loyer: a.loyer, remise: a.remise, fin_remise: a.fin_remise, debut: a.debut, fin: a.fin,
-        derniere: a.derniere_hausse, prochaine: a.prochaine_hausse, anniversaire: anniv, statut, retard, gain,
+        derniere, derniere_source: derniere && derniere === derniereClasseur && derniere !== a.derniere_hausse ? 'classeur' : derniere ? 'archie' : null,
+        prochaine: a.prochaine_hausse, anniversaire: anniv, statut, retard, gain, motif,
+        regle: r ? { preavis_mois: r.preavis_mois, observations: r.observations, societe: r.societe, bureau: r.bureau } : null,
       });
     }
   }
